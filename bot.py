@@ -794,9 +794,21 @@ async def send_as_zip(q, url: str):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def clean_stale_workdirs():
+    """Ag-er crash-e volume-e kono tgdl_* pore thakle start-ei delete."""
+    try:
+        tmp = tempfile.gettempdir()
+        for name in os.listdir(tmp):
+            if name.startswith("tgdl_"):
+                shutil.rmtree(os.path.join(tmp, name), ignore_errors=True)
+    except OSError:
+        pass
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN .env-e bosao. (.env.example dekho)")
+    clean_stale_workdirs()
     builder = ApplicationBuilder().token(BOT_TOKEN)
     # 2GB porjonto file-e maximum timeout — slow VPS upload-eo "Timed out" hobe na.
     builder = builder.connect_timeout(120).read_timeout(3600).write_timeout(7200).pool_timeout(120)
