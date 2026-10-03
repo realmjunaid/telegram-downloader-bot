@@ -143,7 +143,7 @@ Bot replies with 2 buttons:
 
 ```
 Kivabe dibo?
-[ Files (original) ]  [ Zip ]
+[ Files ]  [ Zip ]
 ```
 
 - **Files:** protita image original quality-te file akare jabe (no zip, no compression).

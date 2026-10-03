@@ -649,7 +649,7 @@ async def ask_mode(message, url: str, user_id: int):
     PENDING[key] = {"url": url, "user_id": user_id}
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Files (original)", callback_data=f"files:{key}"),
+            InlineKeyboardButton("Files", callback_data=f"files:{key}"),
             InlineKeyboardButton("Zip", callback_data=f"zip:{key}"),
         ]
     ])
