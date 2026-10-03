@@ -78,11 +78,9 @@ Required files in repo root:
 
 ```
 bot.py
-eh_downloader.py
 requirements.txt
 Dockerfile
-docker-compose.yml   <- Option B (local API, 100MB+)
-docker-compose.simple.yml
+docker-compose.yml   <- local API, 100MB+
 ```
 
 ### Step 2 — Create service in Dokploy
@@ -211,11 +209,9 @@ Just change the env var in Dokploy and redeploy. No code change.
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Telegram handlers, download→zip→send, size-based split |
-| `eh_downloader.py` | Scraper (`download_any()` returns folder path) |
+| `bot.py` | All-in-one: scraper + Telegram handlers, download→zip→send, size-based split |
 | `Dockerfile` | Bot container (`python:3.12-slim`) |
 | `docker-compose.yml` | Bot + local Bot API (100MB–2GB) |
-| `docker-compose.simple.yml` | Bot only (48MB, no extra server) |
 | `requirements.txt` | `cloudscraper, beautifulsoup4, python-telegram-bot, python-dotenv` |
 
 ---

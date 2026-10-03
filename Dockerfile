@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY eh_downloader.py bot.py ./
+COPY bot.py ./
 
 # Dokploy / VPS-er temp dir
 ENV TMPDIR=/tmp
