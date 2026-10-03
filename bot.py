@@ -790,7 +790,8 @@ async def send_as_zip(message, url: str):
             await status.edit_text("Zip banano jayni.")
             return
 
-        await status.edit_text(f"{len(zips)} ta zip pathacchi...")
+        n_zips = len(zips)
+        await status.edit_text(f"Uploading {n_zips} zip {'file' if n_zips == 1 else 'files'}...")
         chat = message.chat
         kinds = []
         for i, zp in enumerate(zips, start=1):
