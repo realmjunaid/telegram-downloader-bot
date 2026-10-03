@@ -550,9 +550,8 @@ from telegram.ext import (
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-# MB per zip. Default 48 = normal Bot API safe (50MB limit).
-# Local Bot API server chalale 100 / 200 / 2000 porjonto dite parba.
-MAX_ZIP_MB = float(os.getenv("MAX_ZIP_MB", "48"))
+# Fixed 100MB per zip (local Bot API server, 2GB porjonto support kore).
+MAX_ZIP_MB = 100
 ALLOWED_IDS = os.getenv("ALLOWED_IDS", "").strip()  # optional: "123,456" — khali thakle sobai use korte parbe
 # Local Bot API server use korle (docker-compose): http://botapi:8081
 API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL", "").strip()

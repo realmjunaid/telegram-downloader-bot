@@ -16,14 +16,14 @@ No single huge zip. 1000+ images = `part1.zip, part2.zip, ...` automatically.
 ```
 You send link
    → bot downloads to temp folder (eh_downloader.py)
-   → packs files by size (MAX_ZIP_MB, default 100)
+   → packs files by size (fixed 100MB per zip)
    → sends part1.zip, part2.zip...
    → deletes temp files
 ```
 
 - Files keep site order: `001 - name.webp`, `002 - name.jpg` ...
 - Resume-safe filenames, retry on network hiccup.
-- `MAX_ZIP_MB` controls one zip size. Bigger gallery = more zips, never one oversized file.
+- Fixed 100MB per zip. Bigger gallery = more zips, never one oversized file.
 - **Auto-delete:** send sesh hole bot `workdir` (images + zips) `shutil.rmtree` diye
   permanently delete kore. Alada delete kora lage na, VPS full hobe na.
   `botapi` container-er cache `cleaner` service hourly (6h+ purono file) clean kore.
@@ -96,13 +96,12 @@ docker-compose.yml   <- local API, 100MB+
 
 ### Step 3 — Add environment variables
 
-Dokploy → Service → **Environment** tab → add these 4:
+Dokploy → Service → **Environment** tab → add these 3:
 
 ```env
 BOT_TOKEN=123456:ABC-your-bot-token
 TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=abcdef1234567890abcdef1234567890
-MAX_ZIP_MB=100
 ```
 
 Optional:
@@ -154,7 +153,7 @@ Kivabe dibo?
 
 - **Files:** protita image original quality-te file akare jabe (no zip, no compression).
   Boro gallery hole onekgula message ashbe, somoy lagbe.
-- **Zip:** `MAX_ZIP_MB` chunk-e `part1.zip, part2.zip...` ashbe:
+- **Zip:** fixed 100MB chunk-e `part1.zip, part2.zip...` ashbe:
 
 ```
 🔍 Downloading...
@@ -177,7 +176,7 @@ cd dbot
 
 # 2. env file
 copy .env.example .env
-# edit .env -> BOT_TOKEN, MAX_ZIP_MB=48 (48 = safe without local API)
+# edit .env -> BOT_TOKEN only (zip fixed 100MB)
 
 # 3. install + run (simple mode, no local API)
 pip install -r requirements.txt
@@ -192,14 +191,11 @@ docker compose up --build
 
 ---
 
-## 8. Change zip size
+## 8. Zip size
 
-| Mode | File | `MAX_ZIP_MB` | Note |
-|---|---|---|---|
-| Simple (no local server) | `docker-compose.simple.yml` | `48` | Safe on `api.telegram.org` (50MB limit) |
-| Local API (this repo default) | `docker-compose.yml` | `100` | Needs `botapi` service, up to 2000 allowed |
-
-Just change the env var in Dokploy and redeploy. No code change.
+Fixed **100MB per zip** (`bot.py`-te hardcode). Boro gallery hole
+`part1.zip, part2.zip...` ashbe. Change korte chaile `bot.py`-te
+`MAX_ZIP_MB = 100` line edit kore redeploy dao.
 
 ---
 
