@@ -313,7 +313,7 @@ def fix_ext_by_magic(data: bytes, ext: str) -> str:
         return ext
     return real
 
-def download_eh_gallery(gallery_url, save_path="."):
+def download_eh_gallery(gallery_url, save_path=".", progress_cb=None):
     print(f" Scanning gallery: {gallery_url}")
     
     title = "EH_Gallery"
@@ -433,6 +433,11 @@ def download_eh_gallery(gallery_url, save_path="."):
             for fut in as_completed(futures):
                 _thread_log(fut.result())
                 done += 1
+                if progress_cb is not None:
+                    try:
+                        progress_cb(done, total_images)
+                    except Exception:
+                        pass
                 if done % 10 == 0:
                     speed = done / max(time.time() - t0, 1)
                     _thread_log(f"--- Progress: {done}/{total_images} ({speed:.1f} img/s) ---")
@@ -451,7 +456,7 @@ def parse_pawchive_url(url):
     return None, None, None
 
 
-def download_pawchive_post(post_url, save_path="."):
+def download_pawchive_post(post_url, save_path=".", progress_cb=None):
     """Pawchive post-er sob attachment original filename soho download kore.
 
     API: /api/v1/{service}/user/{user}/post/{post} theke
@@ -557,6 +562,11 @@ def download_pawchive_post(post_url, save_path="."):
             for fut in as_completed(futs):
                 _thread_log(fut.result())
                 done += 1
+                if progress_cb is not None:
+                    try:
+                        progress_cb(done, len(items))
+                    except Exception:
+                        pass
                 if done % 10 == 0:
                     _thread_log(f"--- Progress: {done}/{len(items)} ({done/max(time.time()-t0,1):.1f} file/s) ---")
     finally:
@@ -566,12 +576,12 @@ def download_pawchive_post(post_url, save_path="."):
     return os.path.abspath(target_dir)
 
 
-def download_any(url, save_path="."):
+def download_any(url, save_path=".", progress_cb=None):
     """URL dekhe site chine sothik downloader-e pathay. Returns target_dir or None."""
     if 'pawchive.pw' in url:
-        return download_pawchive_post(url, save_path=save_path)
+        return download_pawchive_post(url, save_path=save_path, progress_cb=progress_cb)
     else:
-        return download_eh_gallery(url, save_path=save_path)
+        return download_eh_gallery(url, save_path=save_path, progress_cb=progress_cb)
 
 # ================= BOT =================
 import asyncio
@@ -656,9 +666,9 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int):
     return zips
 
 
-def blocking_download(url: str, workdir: str):
+def blocking_download(url: str, workdir: str, progress_cb=None):
     """Thread-e chalano blocking download. Returns (target_dir, total_bytes)."""
-    target = download_any(url, save_path=workdir)
+    target = download_any(url, save_path=workdir, progress_cb=progress_cb)
     if not target or not os.path.isdir(target):
         return None, 0
     total = 0
@@ -707,6 +717,32 @@ async def send_one_file(chat, path, caption: str):
     return kind
 
 
+async def _safe_edit(status, text: str):
+    try:
+        await status.edit_text(text)
+    except Exception:
+        pass
+
+
+def make_progress_cb(status, loop):
+    """Worker thread theke status message-e progress bar update kore (throttled)."""
+    state = {'t': 0.0}
+
+    def cb(done: int, total: int):
+        now = time.monotonic()
+        if now - state['t'] < 4 and done < total:
+            return
+        state['t'] = now
+        pct = int(done * 100 / max(total, 1))
+        bar = '█' * (pct // 10) + '░' * (10 - pct // 10)
+        asyncio.run_coroutine_threadsafe(
+            _safe_edit(status, f"Downloading...\n[{bar}] {pct}% ({done}/{total})"),
+            loop,
+        )
+
+    return cb
+
+
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -723,10 +759,13 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def send_as_zip(message, url: str):
     """Link dile direct zip pathay — kono button na."""
-    status = await message.reply_text("Downloading... (eta boro gallery hole somoy lagbe)")
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Downloading...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
-        target, total = await asyncio.to_thread(blocking_download, url, workdir)
+        target, total = await asyncio.to_thread(
+            blocking_download, url, workdir, make_progress_cb(status, loop)
+        )
 
         if not target:
             await status.edit_text("Download fail. Link / Cloudflare check koro.")
