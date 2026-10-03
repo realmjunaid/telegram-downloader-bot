@@ -680,11 +680,13 @@ def blocking_download(url: str, workdir: str):
 
 
 async def send_one_file(chat, path, caption: str):
-    """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry."""
+    """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry.
+    Returns: 'doc' / 'photo' / 'other' / 'failed' — Telegram ki hisebe nilo."""
+    kind = 'failed'
     for attempt in range(4):
         try:
             with open(path, "rb") as fh:
-                await chat.send_document(
+                msg = await chat.send_document(
                     document=fh,
                     filename=os.path.basename(path),
                     caption=caption,
@@ -693,6 +695,12 @@ async def send_one_file(chat, path, caption: str):
                     connect_timeout=120,
                     pool_timeout=120,
                 )
+            if getattr(msg, 'document', None) is not None:
+                kind = 'doc'
+            elif getattr(msg, 'photo', None):
+                kind = 'photo'
+            else:
+                kind = 'other'
             break
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after + 1)
@@ -702,6 +710,7 @@ async def send_one_file(chat, path, caption: str):
             await asyncio.sleep(3)
     # porpor 100+ file gele Telegram flood dey, tai choto gap
     await asyncio.sleep(0.7)
+    return kind
 
 
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -777,14 +786,17 @@ async def send_files_direct(q, url: str):
         base = os.path.basename(target.rstrip(os.sep))
         await status.edit_text(f"{len(files)} ta file pathacchi (original quality)...")
         chat = q.message.chat
+        kinds = []
         for i, fp in enumerate(files, start=1):
-            await send_one_file(chat, fp, f"{base} — {i}/{len(files)}")
+            kinds.append(await send_one_file(chat, fp, f"{base} — {i}/{len(files)}"))
             if i % 20 == 0:
                 try:
                     await status.edit_text(f"{i}/{len(files)} sent...")
                 except Exception:
                     pass
-        await status.edit_text(f"Done! {len(files)} files sent.")
+        summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} other:{kinds.count('other')} failed:{kinds.count('failed')}"
+        print(f"Send kinds: {summary}", flush=True)
+        await status.edit_text(f"Done! {len(files)} files sent ({summary}).")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
