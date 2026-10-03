@@ -139,26 +139,17 @@ https://e-hentai.org/g/xxxx/yyyy/
 https://pawchive.pw/patreon/user/xxx/post/xxx
 ```
 
-Bot replies with 2 buttons:
-
-```
-Kivabe dibo?
-[ Files ]  [ Zip ]
-```
-
-- **Files:** protita image original quality-te file akare jabe (no zip, no compression).
-  Boro gallery hole onekgula message ashbe, somoy lagbe.
-- **Zip:** single 2GB zip-e (2GB besi hole part1, part2...) ashbe:
+Bot direct zip pathabe (kono button na):
 
 ```
 Downloading...
 850 files (920MB) — zip hocche...
-10 ta zip pathacchi...
-gallery — part 1/10 (98MB)
-gallery — part 2/10 (99MB)
+gallery — part 1/1 (920MB)
 ...
-Done! 850 files, 10 zip.
+Done! 850 files, 1 zip.
 ```
+
+2GB-er moddhe hole single zip, besi hole part1, part2...
 
 ---
 
