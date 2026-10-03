@@ -537,6 +537,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -629,6 +630,31 @@ def blocking_download(url: str, workdir: str):
     return target, total
 
 
+async def send_one_file(chat, path, caption: str):
+    """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry."""
+    for attempt in range(4):
+        try:
+            with open(path, "rb") as fh:
+                await chat.send_document(
+                    document=fh,
+                    filename=os.path.basename(path),
+                    caption=caption,
+                    read_timeout=3600,
+                    write_timeout=7200,
+                    connect_timeout=120,
+                    pool_timeout=120,
+                )
+            break
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except TimedOut:
+            if attempt == 3:
+                raise
+            await asyncio.sleep(3)
+    # porpor 100+ file gele Telegram flood dey, tai choto gap
+    await asyncio.sleep(0.7)
+
+
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -703,16 +729,12 @@ async def send_files_direct(q, url: str):
         await status.edit_text(f"{len(files)} ta file pathacchi (original quality)...")
         chat = q.message.chat
         for i, fp in enumerate(files, start=1):
-            with open(fp, "rb") as fh:
-                await chat.send_document(
-                    document=fh,
-                    filename=fp.name,
-                    caption=f"{base} — {i}/{len(files)}",
-                    read_timeout=3600,
-                    write_timeout=7200,
-                    connect_timeout=120,
-                    pool_timeout=120,
-                )
+            await send_one_file(chat, fp, f"{base} — {i}/{len(files)}")
+            if i % 20 == 0:
+                try:
+                    await status.edit_text(f"{i}/{len(files)} sent...")
+                except Exception:
+                    pass
         await status.edit_text(f"Done! {len(files)} files sent.")
     except Exception as e:
         try:
@@ -757,16 +779,7 @@ async def send_as_zip(q, url: str):
         chat = q.message.chat
         for i, zp in enumerate(zips, start=1):
             size_mb = os.path.getsize(zp) / 1048576
-            with open(zp, "rb") as fh:
-                await chat.send_document(
-                    document=fh,
-                    filename=os.path.basename(zp),
-                    caption=f"{base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
-                    read_timeout=3600,
-                    write_timeout=7200,
-                    connect_timeout=120,
-                    pool_timeout=120,
-                )
+            await send_one_file(chat, zp, f"{base} — part {i}/{len(zips)} ({size_mb:.1f}MB)")
 
         await status.edit_text(f"Done! {n_files} files, {len(zips)} zip.")
     except Exception as e:
