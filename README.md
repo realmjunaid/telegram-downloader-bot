@@ -206,6 +206,7 @@ Fixed **100MB per zip** (`bot.py`-te hardcode). Boro gallery hole
 | `BOT_TOKEN .env-e bosao` | Env var missing in Dokploy. Add `BOT_TOKEN`. |
 | Bot replies `❌ Download fail` | Link wrong, post deleted, or Cloudflare block. Try link in browser first. |
 | `botapi` keeps restarting | Wrong `TELEGRAM_API_ID/HASH`. Recopy from my.telegram.org. |
+| `❌ Error: Timed out` on 90MB+ zip (kintu file eshe jay) | Old build-er 20s upload timeout. New version-e 600s — redeploy dao. |
 | Zip not received, `413 Request Entity Too Large` | You are on official API, not local. Check `TELEGRAM_API_BASE_URL=http://botapi:8081/bot` is set and `botapi` is running. |
 | `Short name` error on my.telegram.org | Must be 5–32 alphanumeric. Use `dbotapp`, not `DBot`. |
 | Dokploy asks for domain/port | Skip it. Polling bot needs no inbound port. `expose: 8081` is internal only (bot → botapi). |

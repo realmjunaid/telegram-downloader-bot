@@ -727,6 +727,10 @@ async def send_files_direct(q, url: str):
                     document=fh,
                     filename=fp.name,
                     caption=f"📁 {base} — {i}/{len(files)}",
+                    read_timeout=300,
+                    write_timeout=600,
+                    connect_timeout=30,
+                    pool_timeout=60,
                 )
         await status.edit_text(f"🎉 Done! {len(files)} files sent.")
     except Exception as e:
@@ -777,6 +781,10 @@ async def send_as_zip(q, url: str):
                     document=fh,
                     filename=os.path.basename(zp),
                     caption=f"📦 {base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
+                    read_timeout=300,
+                    write_timeout=600,
+                    connect_timeout=30,
+                    pool_timeout=60,
                 )
 
         await status.edit_text(f"🎉 Done! {n_files} files, {len(zips)} zip.")
@@ -795,6 +803,9 @@ def main():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN .env-e bosao. (.env.example dekho)")
     builder = ApplicationBuilder().token(BOT_TOKEN)
+    # 95MB+ upload-e default timeout (20s) sesh hoye "Timed out" dito,
+    # tai boro timeout — local API-te 2GB porjonto lagte pare.
+    builder = builder.connect_timeout(30).read_timeout(300).write_timeout(600).pool_timeout(60)
     if API_BASE_URL:
         builder = builder.base_url(API_BASE_URL)
     if API_BASE_FILE_URL:
