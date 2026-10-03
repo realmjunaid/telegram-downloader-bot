@@ -24,6 +24,9 @@ You send link
 - Files keep site order: `001 - name.webp`, `002 - name.jpg` ...
 - Resume-safe filenames, retry on network hiccup.
 - `MAX_ZIP_MB` controls one zip size. Bigger gallery = more zips, never one oversized file.
+- **Auto-delete:** send sesh hole bot `workdir` (images + zips) `shutil.rmtree` diye
+  permanently delete kore. Alada delete kora lage na, VPS full hobe na.
+  `botapi` container-er cache `cleaner` service hourly (6h+ purono file) clean kore.
 
 > Normal Telegram bots are limited to **50MB per file** via `api.telegram.org`.
 > This repo runs a **local Bot API server** next to the bot, so **100MB–2GB**

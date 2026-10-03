@@ -39,5 +39,15 @@ services:
     tmpfs:
       - /tmp:size=4G
 
+  # botapi-er cache (sent file copy) auto-clean — nahole VPS disk full hobe.
+  # 6h+ purono file hourly delete kore. Cholti upload-e hat dey na.
+  cleaner:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - botapi-data:/clean:rw
+    command: >
+      sh -c "while true; do find /clean -type f -mmin +360 -delete 2>/dev/null; sleep 3600; done"
+
 volumes:
   botapi-data:

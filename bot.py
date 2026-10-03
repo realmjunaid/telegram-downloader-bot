@@ -683,11 +683,12 @@ async def handle_one_url(update: Update, url: str):
         await status.edit_text(f"📤 {len(zips)} ta zip pathacchi...")
         for i, zp in enumerate(zips, start=1):
             size_mb = os.path.getsize(zp) / 1048576
-            await update.message.reply_document(
-                document=open(zp, "rb"),
-                filename=os.path.basename(zp),
-                caption=f"📦 {base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
-            )
+            with open(zp, "rb") as fh:
+                await update.message.reply_document(
+                    document=fh,
+                    filename=os.path.basename(zp),
+                    caption=f"📦 {base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
+                )
 
         await status.edit_text(f"🎉 Done! {n_files} files, {len(zips)} zip.")
     except Exception as e:
@@ -696,6 +697,8 @@ async def handle_one_url(update: Update, url: str):
         except Exception:
             pass
     finally:
+        # sob temp file (downloaded images + zips) permanently delete,
+        # nahole VPS storage full hoye jabe
         shutil.rmtree(workdir, ignore_errors=True)
 
 
