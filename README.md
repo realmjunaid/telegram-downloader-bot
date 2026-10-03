@@ -145,7 +145,16 @@ https://e-hentai.org/g/xxxx/yyyy/
 https://pawchive.pw/patreon/user/xxx/post/xxx
 ```
 
-Bot replies:
+Bot replies with 2 buttons:
+
+```
+Kivabe dibo?
+[ 📁 Files (original) ]  [ 📦 Zip ]
+```
+
+- **Files:** protita image original quality-te file akare jabe (no zip, no compression).
+  Boro gallery hole onekgula message ashbe, somoy lagbe.
+- **Zip:** `MAX_ZIP_MB` chunk-e `part1.zip, part2.zip...` ashbe:
 
 ```
 🔍 Downloading...

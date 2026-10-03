@@ -531,12 +531,20 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 
 load_dotenv()
@@ -551,6 +559,10 @@ API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL", "").strip()
 API_BASE_FILE_URL = os.getenv("TELEGRAM_API_BASE_FILE_URL", "").strip()
 
 URL_RE = re.compile(r'https?://[^\s]+')
+
+# link dile sathe sathe download na kore choice button dekhai.
+# key: short id -> {"url": ..., "user_id": ...}
+PENDING = {}
 
 
 def is_allowed(user_id: int) -> bool:
@@ -621,8 +633,8 @@ def blocking_download(url: str, workdir: str):
 
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Link pathao — ami download kore zip kore dibo.\n"
-        f"1 zip = {MAX_ZIP_MB:.0f}MB max, boro gallery hole part1, part2... ashbe.\n"
+        "Link pathao — Files naki Zip choose koro, ami original quality-te pathiye dibo.\n"
+        f"Zip nile 1 zip = {MAX_ZIP_MB:.0f}MB max, boro gallery hole part1, part2... ashbe.\n"
         "Usage: /dl <gallery/post url>"
     )
 
@@ -634,7 +646,7 @@ async def dl_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("Usage: /dl <url>")
         return
-    await handle_one_url(update, ctx.args[0].strip())
+    await ask_mode(update.message, ctx.args[0].strip(), update.effective_user.id)
 
 
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -648,11 +660,88 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     url = m.group(0)
     if "e-hentai.org" not in url and "exhentai.org" not in url and "pawchive.pw" not in url:
         return
-    await handle_one_url(update, url)
+    await ask_mode(update.message, url, update.effective_user.id)
 
 
-async def handle_one_url(update: Update, url: str):
-    status = await update.message.reply_text("🔍 Downloading... (eta boro gallery hole somoy lagbe)")
+async def ask_mode(message, url: str, user_id: int):
+    """Link pele download na kore Files/Zip button dekhay."""
+    key = uuid.uuid4().hex[:8]
+    PENDING[key] = {"url": url, "user_id": user_id}
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📁 Files (original)", callback_data=f"files:{key}"),
+            InlineKeyboardButton("📦 Zip", callback_data=f"zip:{key}"),
+        ]
+    ])
+    await message.reply_text(
+        "Kivabe dibo?",
+        reply_markup=kb,
+    )
+
+
+async def on_mode_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    try:
+        mode, key = q.data.split(":", 1)
+    except ValueError:
+        return
+    item = PENDING.pop(key, None)
+    if not item:
+        await q.edit_message_text("⏳ Expired — link ta abar pathao.")
+        return
+    if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
+        await q.edit_message_text("⛔ Unauthorized.")
+        return
+    if mode == "files":
+        await send_files_direct(q, item["url"])
+    else:
+        await send_as_zip(q, item["url"])
+
+
+def _downloaded_files(target: str):
+    return sorted(
+        [p for p in Path(target).rglob("*") if p.is_file() and not p.name.endswith(".tmp")]
+    )
+
+
+async def send_files_direct(q, url: str):
+    """Original quality-te protita image file akare pathay (no zip)."""
+    status = await q.edit_message_text("🔍 Downloading... (eta boro gallery hole somoy lagbe)")
+    # CallbackQuery-er edit kora message-ke status hisebe use kori
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        target, total = await asyncio.to_thread(blocking_download, url, workdir)
+        if not target:
+            await status.edit_text("❌ Download fail. Link / Cloudflare check koro.")
+            return
+        files = _downloaded_files(target)
+        if not files:
+            await status.edit_text("❌ Kono file paini.")
+            return
+        base = os.path.basename(target.rstrip(os.sep))
+        await status.edit_text(f"📤 {len(files)} ta file pathacchi (original quality)...")
+        chat = q.message.chat
+        for i, fp in enumerate(files, start=1):
+            with open(fp, "rb") as fh:
+                await chat.send_document(
+                    document=fh,
+                    filename=fp.name,
+                    caption=f"📁 {base} — {i}/{len(files)}",
+                )
+        await status.edit_text(f"🎉 Done! {len(files)} files sent.")
+    except Exception as e:
+        try:
+            await status.edit_text(f"❌ Error: {str(e)[:300]}")
+        except Exception:
+            pass
+    finally:
+        # images + temp sob permanently delete, nahole VPS full hobe
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def send_as_zip(q, url: str):
+    status = await q.edit_message_text("🔍 Downloading... (eta boro gallery hole somoy lagbe)")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         target, total = await asyncio.to_thread(blocking_download, url, workdir)
@@ -681,10 +770,11 @@ async def handle_one_url(update: Update, url: str):
             return
 
         await status.edit_text(f"📤 {len(zips)} ta zip pathacchi...")
+        chat = q.message.chat
         for i, zp in enumerate(zips, start=1):
             size_mb = os.path.getsize(zp) / 1048576
             with open(zp, "rb") as fh:
-                await update.message.reply_document(
+                await chat.send_document(
                     document=fh,
                     filename=os.path.basename(zp),
                     caption=f"📦 {base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
@@ -713,6 +803,7 @@ def main():
     app = builder.build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("dl", dl_cmd))
+    app.add_handler(CallbackQueryHandler(on_mode_choice, pattern=r"^(files|zip):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, url_listener))
     print(f"Bot running... (MAX_ZIP_MB={MAX_ZIP_MB})")
     app.run_polling()
