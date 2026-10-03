@@ -1,7 +1,7 @@
 # DBot — Gallery to Telegram Zip Bot
 
-Send a gallery/post link in Telegram → bot downloads all images → splits into
-100MB zip parts → sends them back in chat.
+Send a gallery/post link in Telegram → bot downloads everything → sends back
+as one 2GB zip in chat.
 
 Supports:
 - `e-hentai.org / exhentai.org` galleries (`/g/...`)
@@ -16,20 +16,20 @@ No single huge zip. 1000+ images = `part1.zip, part2.zip, ...` automatically.
 ```
 You send link
    → bot downloads to temp folder (eh_downloader.py)
-   → packs files by size (fixed 100MB per zip)
+   → packs everything into one zip (max 2GB)
    → sends part1.zip, part2.zip...
    → deletes temp files
 ```
 
 - Files keep site order: `001 - name.webp`, `002 - name.jpg` ...
 - Resume-safe filenames, retry on network hiccup.
-- Fixed 100MB per zip. Bigger gallery = more zips, never one oversized file.
+- Fixed 2GB per zip. Gallery 2GB-er moddhe hole single zip, besi hole part1, part2...
 - **Auto-delete:** send sesh hole bot `workdir` (images + zips) `shutil.rmtree` diye
   permanently delete kore. Alada delete kora lage na, VPS full hobe na.
   `botapi` container-er cache `cleaner` service hourly (6h+ purono file) clean kore.
 
 > Normal Telegram bots are limited to **50MB per file** via `api.telegram.org`.
-> This repo runs a **local Bot API server** next to the bot, so **100MB–2GB**
+> This repo runs a **local Bot API server** next to the bot, so **2GB**
 > files work. Human accounts have 2GB, bots need this local server for the same.
 
 ---
@@ -83,7 +83,7 @@ Required files in repo root:
 bot.py
 requirements.txt
 Dockerfile
-docker-compose.yml   <- local API, 100MB+
+docker-compose.yml   <- local API, 2GB
 ```
 
 ### Step 2 — Create service in Dokploy
@@ -148,11 +148,11 @@ Kivabe dibo?
 
 - **Files:** protita image original quality-te file akare jabe (no zip, no compression).
   Boro gallery hole onekgula message ashbe, somoy lagbe.
-- **Zip:** fixed 100MB chunk-e `part1.zip, part2.zip...` ashbe:
+- **Zip:** single 2GB zip-e (2GB besi hole part1, part2...) ashbe:
 
 ```
 Downloading...
-850 files (920MB) — 100MB chunk e zip hocche...
+850 files (920MB) — zip hocche...
 10 ta zip pathacchi...
 gallery — part 1/10 (98MB)
 gallery — part 2/10 (99MB)
@@ -171,14 +171,14 @@ cd dbot
 
 # 2. env file
 copy .env.example .env
-# edit .env -> BOT_TOKEN only (zip fixed 100MB)
+# edit .env -> BOT_TOKEN only (zip fixed 2GB)
 
 # 3. install + run (simple mode, no local API)
 pip install -r requirements.txt
 python bot.py
 ```
 
-For full 100MB local mode on PC you need Docker:
+For full 2GB local mode on PC you need Docker:
 
 ```bash
 docker compose up --build
@@ -188,9 +188,9 @@ docker compose up --build
 
 ## 8. Zip size
 
-Fixed **100MB per zip** (`bot.py`-te hardcode). Boro gallery hole
-`part1.zip, part2.zip...` ashbe. Change korte chaile `bot.py`-te
-`MAX_ZIP_MB = 100` line edit kore redeploy dao.
+Fixed **2000MB (2GB) per zip** (`bot.py`-te hardcode). 2GB-er moddhe hole
+single zip, besi hole part1, part2... Change korte chaile `bot.py`-te
+`MAX_ZIP_MB = 2000` line edit kore redeploy dao.
 
 ---
 
@@ -215,7 +215,7 @@ Fixed **100MB per zip** (`bot.py`-te hardcode). Boro gallery hole
 |---|---|
 | `bot.py` | All-in-one: scraper + Telegram handlers, download→zip→send, size-based split |
 | `Dockerfile` | Bot container (`python:3.12-slim`) |
-| `docker-compose.yml` | Bot + local Bot API (100MB–2GB) |
+| `docker-compose.yml` | Bot + local Bot API (2GB max) |
 | `requirements.txt` | `cloudscraper, beautifulsoup4, python-telegram-bot, python-dotenv` |
 
 ---

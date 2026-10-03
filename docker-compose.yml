@@ -1,4 +1,4 @@
-# Option B — 100MB zip (local Bot API server soho, 2GB porjonto)
+# 2GB zip (local Bot API server soho, max limit)
 # .env-e bosao:
 #   TELEGRAM_API_ID=...
 #   TELEGRAM_API_HASH=...
@@ -34,8 +34,10 @@ services:
       ALLOWED_IDS: ${ALLOWED_IDS:-}
       TELEGRAM_API_BASE_URL: http://botapi:8081/bot
       TELEGRAM_API_BASE_FILE_URL: http://botapi:8081/file/bot
-    tmpfs:
-      - /tmp:size=4G
+    # 2GB zip + source ak sathe /tmp-e thake, tai disk-backed volume.
+    # RAM-backed tmpfs-e 2GB+2GB dhorbe na (OOM hobe).
+    volumes:
+      - tmpdata:/tmp
 
   # botapi-er cache (sent file copy) auto-clean — nahole VPS disk full hobe.
   # 6h+ purono file hourly delete kore. Cholti upload-e hat dey na.
@@ -49,3 +51,4 @@ services:
 
 volumes:
   botapi-data:
+  tmpdata:
