@@ -291,6 +291,28 @@ def is_html_page(resp, data: bytes) -> bool:
     head = data.lstrip()[:200].lower()
     return head.startswith(b'<') and (b'<html' in head or b'<!doctype' in head)
 
+
+def fix_ext_by_magic(data: bytes, ext: str) -> str:
+    """Bytes untouched rekhe sudhu extension content-er sathe milay.
+    Ext vul hole kichu client file khulte pare na (tap-e kichu hoyna)."""
+    if data[:3] == b'\xff\xd8\xff':
+        real = 'jpg'
+    elif data[:8] == b'\x89PNG\r\n\x1a\n':
+        real = 'png'
+    elif data[:6] in (b'GIF87a', b'GIF89a'):
+        real = 'gif'
+    elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        real = 'webp'
+    elif data[:4] == b'\x1a\x45\xdf\xa3':
+        real = 'webm'
+    elif len(data) > 12 and data[4:8] == b'ftyp':
+        real = 'mp4'
+    else:
+        return ext  # unknown (zip/rar/psd/...) — jemon ache temon
+    if real == ext or (real == 'jpg' and ext in ('jpg', 'jpeg')):
+        return ext
+    return real
+
 def download_eh_gallery(gallery_url, save_path="."):
     print(f" Scanning gallery: {gallery_url}")
     
@@ -380,7 +402,7 @@ def download_eh_gallery(gallery_url, save_path="."):
             if is_html_page(img_res, img_data):
                 return f"[{i}/{total_images}]  Skipped (HTML, not media)."
 
-            ext = decide_ext(media_url, img_res)
+            ext = fix_ext_by_magic(img_data, decide_ext(media_url, img_res))
 
             # Original title + sorting: '001 - NAME.webp'
             # number prefix thakay local folder-e website-er hubuhu order thake,
@@ -513,6 +535,13 @@ def download_pawchive_post(post_url, save_path="."):
             return f"[{i}/{len(items)}]  Too small ({len(data)}b): {name}"
         if is_html_page(r, data):
             return f"[{i}/{len(items)}]  Skipped (HTML, not media): {name}"
+        # ext content-er sathe na mille client khulte pare na — bytes same, sudhu ext thik
+        if '.' in safe_name:
+            stem, dot, e = safe_name.rpartition('.')
+            fixed = fix_ext_by_magic(data, e.lower())
+            if fixed != e.lower():
+                safe_name = f"{stem}.{fixed}"
+                out = os.path.join(target_dir, f"{i:03d} - {safe_name}")
         tmp = out + ".tmp"
         with open(tmp, 'wb') as f:
             f.write(data)
