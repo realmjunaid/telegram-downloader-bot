@@ -279,6 +279,18 @@ def decide_ext(media_url, resp):
 
     return 'mp4' if 'video' in ctype else 'jpg'
 
+
+def is_html_page(resp, data: bytes) -> bool:
+    """Cloudflare block / error page (HTML) media bole vul kore save na hoy."""
+    try:
+        ctype = (resp.headers.get('Content-Type', '') if resp is not None else '').lower()
+    except Exception:
+        ctype = ''
+    if 'text/html' in ctype or 'text/plain' in ctype:
+        return True
+    head = data.lstrip()[:200].lower()
+    return head.startswith(b'<') and (b'<html' in head or b'<!doctype' in head)
+
 def download_eh_gallery(gallery_url, save_path="."):
     print(f" Scanning gallery: {gallery_url}")
     
@@ -362,6 +374,11 @@ def download_eh_gallery(gallery_url, save_path="."):
             img_data = img_res.content
             if len(img_data) < 10240:
                 return f"[{i}/{total_images}]  Too small ({len(img_data)}b)."
+
+            # Cloudflare error page (HTML) image nam-e save hole Telegram-e
+            # blank/okl file jeto — tai HTML content reject.
+            if is_html_page(img_res, img_data):
+                return f"[{i}/{total_images}]  Skipped (HTML, not media)."
 
             ext = decide_ext(media_url, img_res)
 
@@ -494,6 +511,8 @@ def download_pawchive_post(post_url, save_path="."):
         data = r.content
         if len(data) < 10240:
             return f"[{i}/{len(items)}]  Too small ({len(data)}b): {name}"
+        if is_html_page(r, data):
+            return f"[{i}/{len(items)}]  Skipped (HTML, not media): {name}"
         tmp = out + ".tmp"
         with open(tmp, 'wb') as f:
             f.write(data)
