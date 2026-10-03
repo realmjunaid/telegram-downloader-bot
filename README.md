@@ -126,18 +126,13 @@ botapi  | ... authorised ...
 bot     | Bot running... (MAX_ZIP_MB=100)
 ```
 
-Then open Telegram → your bot → send `/start`.
+Then open Telegram → your bot → send a gallery link.
 
 ---
 
 ## 6. Use the bot
 
-```
-/start          - help message
-/dl <url>       - download this gallery/post
-```
-
-Or just paste a link directly (no command):
+No command needed. Just paste a link directly:
 
 ```
 https://e-hentai.org/g/xxxx/yyyy/
@@ -148,7 +143,7 @@ Bot replies with 2 buttons:
 
 ```
 Kivabe dibo?
-[ 📁 Files (original) ]  [ 📦 Zip ]
+[ Files (original) ]  [ Zip ]
 ```
 
 - **Files:** protita image original quality-te file akare jabe (no zip, no compression).
@@ -156,13 +151,13 @@ Kivabe dibo?
 - **Zip:** fixed 100MB chunk-e `part1.zip, part2.zip...` ashbe:
 
 ```
-🔍 Downloading...
-📦 850 files (920MB) — 100MB chunk e zip hocche...
-📤 10 ta zip pathacchi...
-📦 gallery — part 1/10 (98MB)
-📦 gallery — part 2/10 (99MB)
+Downloading...
+850 files (920MB) — 100MB chunk e zip hocche...
+10 ta zip pathacchi...
+gallery — part 1/10 (98MB)
+gallery — part 2/10 (99MB)
 ...
-🎉 Done! 850 files, 10 zip.
+Done! 850 files, 10 zip.
 ```
 
 ---

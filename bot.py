@@ -110,12 +110,12 @@ def safe_get(url, timeout=30, retries=4, stream=False, extra_headers=None, quiet
         except Exception as e:
             last_err = str(e)[:120]
         if not quiet:
-            _thread_log(f"  ↻ Retry {attempt}/{retries} ({last_err})")
+            _thread_log(f"   Retry {attempt}/{retries} ({last_err})")
         # fast backoff: 1s, 2s, 3s... age chilo 2,4,8,16s (etai slow korto)
         if attempt < retries:
             time.sleep(attempt * 0.8 + random.uniform(0, 0.5))
     if not quiet:
-        _thread_log(f"  ❌ Sob retry fail: {last_err}")
+        _thread_log(f"   Sob retry fail: {last_err}")
     return None
 
 def sanitize_folder_name(name):
@@ -280,7 +280,7 @@ def decide_ext(media_url, resp):
     return 'mp4' if 'video' in ctype else 'jpg'
 
 def download_eh_gallery(gallery_url, save_path="."):
-    print(f"🔍 Scanning gallery: {gallery_url}")
+    print(f" Scanning gallery: {gallery_url}")
     
     title = "EH_Gallery"
     page_urls = []
@@ -290,7 +290,7 @@ def download_eh_gallery(gallery_url, save_path="."):
     while current_url:
         res = safe_get(current_url, timeout=30, retries=PAGE_RETRIES)
         if res is None:
-            print(f"❌ Failed to access page after retry: {current_url}")
+            print(f" Failed to access page after retry: {current_url}")
             break
 
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -325,7 +325,7 @@ def download_eh_gallery(gallery_url, save_path="."):
         time.sleep(random.uniform(0.2, 0.5))
 
     if not page_urls:
-        print("❌ No images found. The layout changed or Cloudflare blocked the request.")
+        print(" No images found. The layout changed or Cloudflare blocked the request.")
         return None
 
     # 2. Create output directory
@@ -333,23 +333,23 @@ def download_eh_gallery(gallery_url, save_path="."):
     os.makedirs(target_dir, exist_ok=True)
     total_images = len(page_urls)
 
-    print(f"📁 Target Folder: {os.path.abspath(target_dir)}")
-    print(f"🖼️ Found {total_images} images. Downloading RAW with {MAX_WORKERS} parallel workers...\n")
+    print(f" Target Folder: {os.path.abspath(target_dir)}")
+    print(f" Found {total_images} images. Downloading RAW with {MAX_WORKERS} parallel workers...\n")
 
     def download_one(i, page_url):
         # Resume support (purono 001.ext + notun '001 - name.ext' duitai)
         if already_downloaded(target_dir, i):
-            return f"[{i}/{total_images}] ⏩ Skipped (exists)."
+            return f"[{i}/{total_images}]  Skipped (exists)."
         try:
             r = safe_get(page_url, timeout=30, retries=PAGE_RETRIES, quiet=True)
             if r is None:
-                return f"[{i}/{total_images}] ❌ Page fail: {page_url}"
+                return f"[{i}/{total_images}]  Page fail: {page_url}"
             s = BeautifulSoup(r.text, 'html.parser')
 
             media_url, kind = extract_media_url(s, page_url)
 
             if not media_url:
-                return f"[{i}/{total_images}] ⚠️ Image/video link not found."
+                return f"[{i}/{total_images}]  Image/video link not found."
 
             img_res = safe_get(
                 media_url, timeout=60, retries=IMG_RETRIES, quiet=True,
@@ -357,11 +357,11 @@ def download_eh_gallery(gallery_url, save_path="."):
                                'Accept': '*/*'},
             )
             if img_res is None:
-                return f"[{i}/{total_images}] ❌ Media fail after retry."
+                return f"[{i}/{total_images}]  Media fail after retry."
 
             img_data = img_res.content
             if len(img_data) < 10240:
-                return f"[{i}/{total_images}] ⚠️ Too small ({len(img_data)}b)."
+                return f"[{i}/{total_images}]  Too small ({len(img_data)}b)."
 
             ext = decide_ext(media_url, img_res)
 
@@ -379,10 +379,10 @@ def download_eh_gallery(gallery_url, save_path="."):
             with open(tmpfile, 'wb') as f:
                 f.write(img_data)
             os.replace(tmpfile, filename)
-            label = '🎬 video' if ext in ('mp4', 'webm', 'm4v', 'mov') else ('✨ animated' if ext in ('webp', 'gif') else '🖼️ image')
-            return f"[{i}/{total_images}] ✅ {label} {os.path.basename(filename)} ({len(img_data)//1024} KB)"
+            label = ' video' if ext in ('mp4', 'webm', 'm4v', 'mov') else (' animated' if ext in ('webp', 'gif') else ' image')
+            return f"[{i}/{total_images}]  {label} {os.path.basename(filename)} ({len(img_data)//1024} KB)"
         except Exception as e:
-            return f"[{i}/{total_images}] ❌ {str(e)[:100]}"
+            return f"[{i}/{total_images}]  {str(e)[:100]}"
 
     prevent_sleep_start()
     try:
@@ -400,7 +400,7 @@ def download_eh_gallery(gallery_url, save_path="."):
     finally:
         prevent_sleep_stop()
 
-    print(f"\n🎉 RAW Download Complete! Saved in: {os.path.abspath(target_dir)}")
+    print(f"\n RAW Download Complete! Saved in: {os.path.abspath(target_dir)}")
     return os.path.abspath(target_dir)
 
 
@@ -422,20 +422,20 @@ def download_pawchive_post(post_url, save_path="."):
     """
     service, user, post_id = parse_pawchive_url(post_url)
     if not post_id:
-        print("❌ Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
+        print(" Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
         return None
 
     api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
-    print(f"🔍 Pawchive API: {api_url}")
+    print(f" Pawchive API: {api_url}")
     res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES,
                    extra_headers={'Accept': 'application/json'})
     if res is None:
-        print("❌ API theke post info pelam na.")
+        print(" API theke post info pelam na.")
         return None
     try:
         post = res.json()
     except Exception:
-        print("❌ API response JSON na.")
+        print(" API response JSON na.")
         return None
 
     title = (post.get('title') or f"pawchive_{post_id}").strip()
@@ -457,30 +457,30 @@ def download_pawchive_post(post_url, save_path="."):
             items.append((name, path))
 
     if not items:
-        print("❌ Ei post-e kono file/attachment nai.")
+        print(" Ei post-e kono file/attachment nai.")
         return None
 
     has_full = post.get('has_full')
     base = 'https://img.pawchive.pw/data' if has_full else 'https://img.pawchive.pw/thumbnail/data'
     if has_full:
-        print(f"✅ Full-res archived ({len(items)} files).")
+        print(f" Full-res archived ({len(items)} files).")
     else:
-        print("⚠️ Ei post ekhono archive hoyni (has_full=false) — site-e original nai,")
+        print(" Ei post ekhono archive hoyni (has_full=false) — site-e original nai,")
         print("   tai preview quality nambe. Pore import hole abar chalale full-res pabe.")
 
-    print(f"📁 Target Folder: {os.path.abspath(target_dir)}")
+    print(f" Target Folder: {os.path.abspath(target_dir)}")
 
     def download_one(i, name, path):
         safe_name = sanitize_file_name(name)
         # preview mode-e archive file-er (rar/zip/psd) kono thumbnail thake na
         if not has_full and safe_name.lower().endswith(('.rar', '.zip', '.7z', '.psd', '.psb', '.clip', '.sai', '.bin')):
-            return f"[{i}/{len(items)}] ⏭️ Skipped (archive, full-res import hole pabe): {safe_name}"
+            return f"[{i}/{len(items)}]  Skipped (archive, full-res import hole pabe): {safe_name}"
         out = os.path.join(target_dir, f"{i:03d} - {safe_name}")
         if os.path.exists(out) and os.path.getsize(out) > 10240:
-            return f"[{i}/{len(items)}] ⏩ Skipped (exists)."
+            return f"[{i}/{len(items)}]  Skipped (exists)."
         # purono numeric-only format thakleo skip
         if already_downloaded(target_dir, i):
-            return f"[{i}/{len(items)}] ⏩ Skipped (exists)."
+            return f"[{i}/{len(items)}]  Skipped (exists)."
         url = base + path if path.startswith('/') else base + '/' + path
         r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
                      extra_headers={'Referer': post_url, 'Accept': '*/*'})
@@ -490,16 +490,16 @@ def download_pawchive_post(post_url, save_path="."):
             r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
                          extra_headers={'Referer': post_url, 'Accept': '*/*'})
         if r is None:
-            return f"[{i}/{len(items)}] ❌ Fail: {name}"
+            return f"[{i}/{len(items)}]  Fail: {name}"
         data = r.content
         if len(data) < 10240:
-            return f"[{i}/{len(items)}] ⚠️ Too small ({len(data)}b): {name}"
+            return f"[{i}/{len(items)}]  Too small ({len(data)}b): {name}"
         tmp = out + ".tmp"
         with open(tmp, 'wb') as f:
             f.write(data)
         os.replace(tmp, out)
         tag = ' (preview)' if (not has_full or '/thumbnail/' in url) else ''
-        return f"[{i}/{len(items)}] ✅ {os.path.basename(out)}{tag} ({len(data)//1024} KB)"
+        return f"[{i}/{len(items)}]  {os.path.basename(out)}{tag} ({len(data)//1024} KB)"
 
     prevent_sleep_start()
     try:
@@ -514,7 +514,7 @@ def download_pawchive_post(post_url, save_path="."):
     finally:
         prevent_sleep_stop()
 
-    print(f"\n🎉 Pawchive Download Complete! Saved in: {os.path.abspath(target_dir)}")
+    print(f"\n Pawchive Download Complete! Saved in: {os.path.abspath(target_dir)}")
     return os.path.abspath(target_dir)
 
 
@@ -540,7 +540,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
-    CommandHandler,
     MessageHandler,
     ContextTypes,
     filters,
@@ -630,24 +629,6 @@ def blocking_download(url: str, workdir: str):
     return target, total
 
 
-async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Link pathao — Files naki Zip choose koro, ami original quality-te pathiye dibo.\n"
-        f"Zip nile 1 zip = {MAX_ZIP_MB:.0f}MB max, boro gallery hole part1, part2... ashbe.\n"
-        "Usage: /dl <gallery/post url>"
-    )
-
-
-async def dl_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
-        await update.message.reply_text("⛔ Unauthorized.")
-        return
-    if not ctx.args:
-        await update.message.reply_text("Usage: /dl <url>")
-        return
-    await ask_mode(update.message, ctx.args[0].strip(), update.effective_user.id)
-
-
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -668,8 +649,8 @@ async def ask_mode(message, url: str, user_id: int):
     PENDING[key] = {"url": url, "user_id": user_id}
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📁 Files (original)", callback_data=f"files:{key}"),
-            InlineKeyboardButton("📦 Zip", callback_data=f"zip:{key}"),
+            InlineKeyboardButton("Files (original)", callback_data=f"files:{key}"),
+            InlineKeyboardButton("Zip", callback_data=f"zip:{key}"),
         ]
     ])
     await message.reply_text(
@@ -687,10 +668,10 @@ async def on_mode_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     item = PENDING.pop(key, None)
     if not item:
-        await q.edit_message_text("⏳ Expired — link ta abar pathao.")
+        await q.edit_message_text("Expired — link ta abar pathao.")
         return
     if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
-        await q.edit_message_text("⛔ Unauthorized.")
+        await q.edit_message_text("Unauthorized.")
         return
     if mode == "files":
         await send_files_direct(q, item["url"])
@@ -706,36 +687,36 @@ def _downloaded_files(target: str):
 
 async def send_files_direct(q, url: str):
     """Original quality-te protita image file akare pathay (no zip)."""
-    status = await q.edit_message_text("🔍 Downloading... (eta boro gallery hole somoy lagbe)")
+    status = await q.edit_message_text("Downloading... (eta boro gallery hole somoy lagbe)")
     # CallbackQuery-er edit kora message-ke status hisebe use kori
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         target, total = await asyncio.to_thread(blocking_download, url, workdir)
         if not target:
-            await status.edit_text("❌ Download fail. Link / Cloudflare check koro.")
+            await status.edit_text("Download fail. Link / Cloudflare check koro.")
             return
         files = _downloaded_files(target)
         if not files:
-            await status.edit_text("❌ Kono file paini.")
+            await status.edit_text("Kono file paini.")
             return
         base = os.path.basename(target.rstrip(os.sep))
-        await status.edit_text(f"📤 {len(files)} ta file pathacchi (original quality)...")
+        await status.edit_text(f"{len(files)} ta file pathacchi (original quality)...")
         chat = q.message.chat
         for i, fp in enumerate(files, start=1):
             with open(fp, "rb") as fh:
                 await chat.send_document(
                     document=fh,
                     filename=fp.name,
-                    caption=f"📁 {base} — {i}/{len(files)}",
+                    caption=f"{base} — {i}/{len(files)}",
                     read_timeout=3600,
                     write_timeout=7200,
                     connect_timeout=120,
                     pool_timeout=120,
                 )
-        await status.edit_text(f"🎉 Done! {len(files)} files sent.")
+        await status.edit_text(f"Done! {len(files)} files sent.")
     except Exception as e:
         try:
-            await status.edit_text(f"❌ Error: {str(e)[:300]}")
+            await status.edit_text(f"Error: {str(e)[:300]}")
         except Exception:
             pass
     finally:
@@ -744,22 +725,22 @@ async def send_files_direct(q, url: str):
 
 
 async def send_as_zip(q, url: str):
-    status = await q.edit_message_text("🔍 Downloading... (eta boro gallery hole somoy lagbe)")
+    status = await q.edit_message_text("Downloading... (eta boro gallery hole somoy lagbe)")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         target, total = await asyncio.to_thread(blocking_download, url, workdir)
 
         if not target:
-            await status.edit_text("❌ Download fail. Link / Cloudflare check koro.")
+            await status.edit_text("Download fail. Link / Cloudflare check koro.")
             return
 
         n_files = sum(1 for _ in Path(target).rglob("*") if _.is_file())
         if n_files == 0:
-            await status.edit_text("❌ Kono file paini.")
+            await status.edit_text("Kono file paini.")
             return
 
         await status.edit_text(
-            f"📦 {n_files} files ({total/1048576:.1f}MB) — {MAX_ZIP_MB:.0f}MB chunk e zip hocche..."
+            f"{n_files} files ({total/1048576:.1f}MB) — {MAX_ZIP_MB:.0f}MB chunk e zip hocche..."
         )
 
         zipdir = os.path.join(workdir, "_zips")
@@ -769,10 +750,10 @@ async def send_as_zip(q, url: str):
 
         zips = await asyncio.to_thread(make_zip_parts, target, zipdir, base, max_bytes)
         if not zips:
-            await status.edit_text("❌ Zip banano jayni.")
+            await status.edit_text("Zip banano jayni.")
             return
 
-        await status.edit_text(f"📤 {len(zips)} ta zip pathacchi...")
+        await status.edit_text(f"{len(zips)} ta zip pathacchi...")
         chat = q.message.chat
         for i, zp in enumerate(zips, start=1):
             size_mb = os.path.getsize(zp) / 1048576
@@ -780,17 +761,17 @@ async def send_as_zip(q, url: str):
                 await chat.send_document(
                     document=fh,
                     filename=os.path.basename(zp),
-                    caption=f"📦 {base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
+                    caption=f"{base} — part {i}/{len(zips)} ({size_mb:.1f}MB)",
                     read_timeout=3600,
                     write_timeout=7200,
                     connect_timeout=120,
                     pool_timeout=120,
                 )
 
-        await status.edit_text(f"🎉 Done! {n_files} files, {len(zips)} zip.")
+        await status.edit_text(f"Done! {n_files} files, {len(zips)} zip.")
     except Exception as e:
         try:
-            await status.edit_text(f"❌ Error: {str(e)[:300]}")
+            await status.edit_text(f"Error: {str(e)[:300]}")
         except Exception:
             pass
     finally:
@@ -810,8 +791,6 @@ def main():
     if API_BASE_FILE_URL:
         builder = builder.base_file_url(API_BASE_FILE_URL)
     app = builder.build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("dl", dl_cmd))
     app.add_handler(CallbackQueryHandler(on_mode_choice, pattern=r"^(files|zip):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, url_listener))
     print(f"Bot running... (MAX_ZIP_MB={MAX_ZIP_MB})")
