@@ -1,0 +1,4 @@
+cloudscraper>=1.2.71
+beautifulsoup4>=4.12
+python-telegram-bot>=21.0
+python-dotenv>=1.0

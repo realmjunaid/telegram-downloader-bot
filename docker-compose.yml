@@ -1,0 +1,43 @@
+# Option B — 100MB+ zip (local Bot API server soho, 2GB porjonto)
+# .env-e bosao:
+#   TELEGRAM_API_ID=...
+#   TELEGRAM_API_HASH=...
+#   BOT_TOKEN=...
+#   MAX_ZIP_MB=100
+name: tgbot-localapi
+services:
+  botapi:
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_STAT: "1"
+    command: >-
+      --local
+      --http-port 8081
+      --dir /var/lib/telegram-bot-api
+      --temp-dir /tmp/telegram-bot-api
+      --log-level 2
+    volumes:
+      - botapi-data:/var/lib/telegram-bot-api
+    expose:
+      - "8081"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - botapi
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      MAX_ZIP_MB: ${MAX_ZIP_MB:-100}
+      ALLOWED_IDS: ${ALLOWED_IDS:-}
+      TELEGRAM_API_BASE_URL: http://botapi:8081/bot
+      TELEGRAM_API_BASE_FILE_URL: http://botapi:8081/file/bot
+    tmpfs:
+      - /tmp:size=4G
+
+volumes:
+  botapi-data:
