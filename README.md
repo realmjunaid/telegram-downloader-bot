@@ -157,6 +157,18 @@ Done! 61 files, 1 zip.
 Shuru-tei gallery scan kore file count + estimated size dekhay, tarpor download shuru hoy.
 2GB-er moddhe hole single zip, besi hole part1, part2...
 
+## 6b. Mega file link
+
+```
+https://mega.nz/file/AbC123#keyXYZ
+```
+
+* `.zip/.rar/.7z` hole **direct** pathabe (re-zip na)
+* Single image/video/doc hole **direct document** hisebe jabe
+* 2GB besi hole refuse korbe
+* Free IP quota sesh hole `Mega free quota sesh` dekhabe — pore try koro ba `MEGA_EMAIL`/`MEGA_PASSWORD` env dao (quota bare)
+* Folder link (`/folder/...`) ekhono supported na
+
 ---
 
 ## 7. Run locally (test on PC)

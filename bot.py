@@ -716,6 +716,9 @@ ALLOWED_IDS = os.getenv("ALLOWED_IDS", "").strip()  # optional: "123,456" — kh
 # Local Bot API server use korle (docker-compose): http://botapi:8081
 API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL", "").strip()
 API_BASE_FILE_URL = os.getenv("TELEGRAM_API_BASE_FILE_URL", "").strip()
+# Mega Pro login thakle quota bare (optional — khali thakle anonymous).
+MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
+MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
 
 URL_RE = re.compile(r'https?://[^\s]+')
 
@@ -861,6 +864,9 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not m:
         return
     url = m.group(0)
+    if "mega.nz" in url or "mega.io" in url:
+        await send_mega(update.message, url)
+        return
     if "e-hentai.org" not in url and "exhentai.org" not in url and "pawchive.pw" not in url:
         return
     await send_as_zip(update.message, url)
@@ -952,6 +958,67 @@ async def send_as_zip(message, url: str):
     finally:
         # sob temp file (downloaded images + zips) permanently delete,
         # nahole VPS storage full hoye jabe
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def blocking_mega_download(url: str, workdir: str):
+    """Mega file link theke 1 ta file namay. Returns path, naile exception.
+    Folder link ekhono supported na."""
+    from mega import Mega
+    if '/folder/' in url or '#F!' in url:
+        raise ValueError("FOLDER_LINK")
+    mega = Mega()
+    m = mega.login(MEGA_EMAIL, MEGA_PASSWORD) if MEGA_EMAIL else mega.login()
+    got = m.download_url(url, dest_path=workdir)
+    path = got if isinstance(got, str) else None
+    if not path or not os.path.isfile(path):
+        # fallback: workdir-e notun file khujo
+        cands = [os.path.join(workdir, f) for f in os.listdir(workdir)]
+        cands = [p for p in cands if os.path.isfile(p)]
+        if not cands:
+            raise RuntimeError("DOWNLOAD_EMPTY")
+        path = max(cands, key=os.path.getmtime)
+    return path
+
+
+async def send_mega(message, url: str):
+    """Mega file link: zip hole direct zip, single file hole direct document."""
+    status = await message.reply_text("Downloading from Mega...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        try:
+            target = await asyncio.to_thread(blocking_mega_download, url, workdir)
+        except ValueError as e:
+            if str(e) == "FOLDER_LINK":
+                await status.edit_text("Mega folder link ekhono supported na — file link dao.")
+                return
+            raise
+        if not target:
+            await status.edit_text("Download fail. Link check koro.")
+            return
+
+        size_mb = os.path.getsize(target) / 1048576
+        if size_mb > 2000:
+            await status.edit_text(f"File too big ({size_mb:.0f}MB) — Telegram max 2GB.")
+            return
+
+        name = os.path.basename(target)
+        kind = 'zip' if name.lower().endswith(('.zip', '.rar', '.7z')) else 'file'
+        await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
+        chat = message.chat
+        k = await send_one_file(chat, target, name)
+        print(f"Mega send kind: {k} ({name})", flush=True)
+        await status.edit_text(f"Done! {name} ({size_mb:.1f}MB).")
+    except Exception as e:
+        err = str(e)
+        if 'quota' in err.lower() or 'overquota' in err.lower() or 'EOVERQUOTA' in err:
+            await status.edit_text("Mega free quota sesh (IP limit). Pore try koro ba MEGA_EMAIL/PASSWORD env dao.")
+        else:
+            try:
+                await status.edit_text(f"Error: {err[:300]}")
+            except Exception:
+                pass
+    finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
