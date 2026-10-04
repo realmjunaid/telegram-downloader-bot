@@ -686,6 +686,183 @@ def download_any(url, save_path=".", progress_cb=None, prescan=None):
     else:
         return download_eh_gallery(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
 
+
+TERA_DOMAINS = (
+    'terabox.com', '1024terabox.com', 'teraboxapp.com', 'mirrobox.com',
+    'nephobox.com', 'freemibox.com', '1024tera.com', 'teraboxlink.com',
+)
+TERA_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+           '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+
+def is_terabox_url(url):
+    return any(d in url for d in TERA_DOMAINS)
+
+
+def parse_terabox_surl(url):
+    """Share link theke surl ber kore. /s/XXX, ?surl=XXX 2 format-e."""
+    m = re.search(r'surl=([A-Za-z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    m = re.search(r'/s/([A-Za-z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    return None
+
+
+def extract_terabox_auth(page):
+    """Share page HTML theke sign/timestamp/shareid/uk ber kore. Multiple pattern try."""
+    out = {}
+    pats = {
+        'sign': [r'"sign"\s*:\s*"([a-f0-9]{20,})"', r"'sign'\s*:\s*'([a-f0-9]{20,})'",
+                 r'sign%22%3A%22([a-f0-9]{20,})', r'sign=([a-f0-9]{20,})'],
+        'timestamp': [r'"timestamp"\s*:\s*(\d{9,})', r"'timestamp'\s*:\s*(\d{9,})",
+                      r'timestamp%22%3A(\d{9,})'],
+        'shareid': [r'"share_id"\s*:\s*(\d+)', r'"shareid"\s*:\s*(\d+)', r"'share_id'\s*:\s*(\d+)",
+                    r'shareid%22%3A(\d+)'],
+        'uk': [r'"share_uk"\s*:\s*"(\d+)"', r'"share_uk"\s*:\s*(\d+)', r'"uk"\s*:\s*(\d+)',
+               r"'share_uk'\s*:\s*(\d+)", r'share_uk%22%3A%22(\d+)'],
+    }
+    for key, plist in pats.items():
+        for p in plist:
+            m = re.search(p, page)
+            if m:
+                out[key] = m.group(1)
+                break
+    return out
+
+
+def blocking_terabox_download(url, workdir, byte_cb=None):
+    """Terabox share link -> sob file namay. Returns target_dir.
+    Raises ValueError(VERIFY/LOGIN/EXPIRED/EMPTY) clean message-er jonno."""
+    import requests
+    surl = parse_terabox_surl(url)
+    if not surl:
+        raise ValueError("BAD_LINK")
+
+    sess = requests.Session()
+    sess.headers.update({'User-Agent': TERA_UA})
+
+    # 1. share page (nijer domain age, fallback www.terabox.com)
+    try:
+        host = re.search(r'https?://([^/]+)', url).group(1)
+    except Exception:
+        host = 'www.terabox.com'
+    page, auth, share_page_url = None, {}, ''
+    for h in dict.fromkeys([host, 'www.terabox.com', '1024terabox.com']):
+        try:
+            share_page_url = f"https://{h}/sharing/link?surl={surl}"
+            r = sess.get(share_page_url, timeout=30)
+            if r.status_code == 200 and len(r.text) > 5000:
+                page = r.text
+                auth = extract_terabox_auth(page)
+                if auth.get('sign'):
+                    break
+        except Exception:
+            continue
+    if not page:
+        raise ValueError("PAGE_FAIL")
+    low = page.lower()
+    if not auth.get('sign'):
+        if 'verify' in low or 'captcha' in low or 'vcode' in low:
+            raise ValueError("VERIFY")
+        raise ValueError("EXPIRED")
+
+    base_params = {
+        'app_id': '250528', 'web': '1', 'channel': 'dubox', 'clienttype': '0',
+        'sign': auth['sign'], 'timestamp': auth.get('timestamp', ''),
+        'shareid': auth.get('shareid', ''), 'uk': auth.get('uk', ''),
+    }
+
+    # 2. file list (dir recursive, depth 3)
+    all_files, total_size, queue, seen = [], [0], [('', 0)], set()
+
+    def list_dir(path, depth):
+        params = dict(base_params, page='1', num='1000', order='time', desc='1', dir=path)
+        r = sess.get('https://www.terabox.com/share/list', params=params,
+                     headers={'Referer': share_page_url}, timeout=30)
+        data = r.json()
+        if data.get('errno') not in (0, None):
+            raise ValueError(f"ERRNO_{data.get('errno')}")
+        return data.get('list') or []
+
+    while queue:
+        dpath, depth = queue.pop(0)
+        if depth > 3 or dpath in seen:
+            continue
+        seen.add(dpath)
+        try:
+            items = list_dir(dpath, depth)
+        except ValueError:
+            raise
+        except Exception:
+            continue
+        for it in items:
+            if it.get('isdir'):
+                queue.append((it.get('path', ''), depth + 1))
+            else:
+                it['_dir'] = dpath
+                all_files.append(it)
+                try:
+                    total_size[0] += int(it.get('size') or 0)
+                except (TypeError, ValueError):
+                    pass
+
+    if not all_files:
+        raise ValueError("EMPTY")
+
+    # 3. download protita file (dlink direct, na thakle download API)
+    target_dir = os.path.join(workdir, sanitize_folder_name(f"terabox_{surl[:12]}"))
+    os.makedirs(target_dir, exist_ok=True)
+    done_bytes = [0]
+
+    for it in all_files:
+        name = sanitize_file_name(it.get('server_filename') or 'file')
+        dlink = it.get('dlink') or ''
+        if not dlink:
+            try:
+                p = dict(base_params, fidlist=f"[{it.get('fs_id')}]", type='nolimit')
+                r = sess.get('https://www.terabox.com/api/download', params=p,
+                             headers={'Referer': share_page_url}, timeout=30)
+                d = r.json()
+                if isinstance(d, dict):
+                    dl = d.get('dlink') or d.get('list') or []
+                    if isinstance(dl, list) and dl:
+                        dlink = dl[0].get('dlink', '') if isinstance(dl[0], dict) else ''
+                    elif isinstance(dl, str):
+                        dlink = dl
+            except Exception:
+                dlink = ''
+        if not dlink:
+            continue
+        out = os.path.join(target_dir, name)
+        k = 1
+        stem, dot, ext = out.rpartition('.')
+        while os.path.exists(out):
+            out = f"{stem}({k}){dot}{ext}" if dot else f"{out}({k})"
+            k += 1
+        r = sess.get(dlink, headers={'Referer': share_page_url, 'User-Agent': TERA_UA},
+                     stream=True, timeout=60)
+        r.raise_for_status()
+        with open(out, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                done_bytes[0] += len(chunk)
+                if byte_cb is not None:
+                    try:
+                        byte_cb(done_bytes[0], total_size[0])
+                    except Exception:
+                        pass
+        if os.path.getsize(out) < 1024:
+            os.remove(out)
+
+    files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
+    if not files:
+        raise ValueError("EMPTY")
+    return target_dir
+
 # ================= BOT =================
 import asyncio
 import os
@@ -855,6 +1032,27 @@ def make_progress_cb(status, loop, label="Downloading..."):
     return cb
 
 
+def make_byte_progress_cb(status, loop, label, total_bytes):
+    """Stream download-er jonno MB-based progress bar (Terabox/Mega)."""
+    state = {'t': 0.0}
+
+    def cb(done_bytes: int, total: int = 0):
+        now = time.monotonic()
+        tot = total or total_bytes or 0
+        if now - state['t'] < 4 and (not tot or done_bytes < tot):
+            return
+        state['t'] = now
+        if tot:
+            pct = int(done_bytes * 100 / tot)
+            bar = '█' * (pct // 10) + '░' * (10 - pct // 10)
+            txt = f"{label}\n{bar} {pct}% ({human_size(done_bytes)}/{human_size(tot)})"
+        else:
+            txt = f"{label}\n{human_size(done_bytes)} downloaded..."
+        asyncio.run_coroutine_threadsafe(_safe_edit(status, txt), loop)
+
+    return cb
+
+
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -866,6 +1064,9 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     url = m.group(0)
     if "mega.nz" in url or "mega.io" in url:
         await send_mega(update.message, url)
+        return
+    if is_terabox_url(url):
+        await send_terabox(update.message, url)
         return
     if "e-hentai.org" not in url and "exhentai.org" not in url and "pawchive.pw" not in url:
         return
@@ -915,41 +1116,7 @@ async def send_as_zip(message, url: str):
             await status.edit_text("Download fail. Link / Cloudflare check koro.")
             return
 
-        n_files = sum(1 for _ in Path(target).rglob("*") if _.is_file())
-        if n_files == 0:
-            await status.edit_text("Kono file paini.")
-            return
-
-        await status.edit_text(
-            f"{n_files} files ({total/1048576:.1f}MB) — zip hocche..."
-        )
-
-        zipdir = os.path.join(workdir, "_zips")
-        os.makedirs(zipdir, exist_ok=True)
-        base = os.path.basename(target.rstrip(os.sep))
-        max_bytes = int(MAX_ZIP_MB * 1024 * 1024)
-
-        # 3. Zip with progress bar
-        await status.edit_text("Zipping...")
-        zips = await asyncio.to_thread(
-            make_zip_parts, target, zipdir, base, max_bytes,
-            make_progress_cb(status, loop, "Zipping..."),
-        )
-        if not zips:
-            await status.edit_text("Zip banano jayni.")
-            return
-
-        n_zips = len(zips)
-        await status.edit_text(f"Uploading {n_zips} zip {'file' if n_zips == 1 else 'files'}...")
-        chat = message.chat
-        kinds = []
-        for i, zp in enumerate(zips, start=1):
-            size_mb = os.path.getsize(zp) / 1048576
-            kinds.append(await send_one_file(chat, zp, f"{base} — part {i}/{len(zips)} ({size_mb:.1f}MB)"))
-
-        summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} other:{kinds.count('other')} failed:{kinds.count('failed')}"
-        print(f"Send kinds: {summary}", flush=True)
-        await status.edit_text(f"Done! {n_files} files, {len(zips)} zip ({summary}).")
+        await zip_and_send(status, message.chat, target, total)
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
@@ -959,6 +1126,44 @@ async def send_as_zip(message, url: str):
         # sob temp file (downloaded images + zips) permanently delete,
         # nahole VPS storage full hoye jabe
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def zip_and_send(status, chat, target_dir: str, total: int):
+    """Downloaded folder -> zip (+progress) -> upload. Gallery + Terabox 2 jon-e use kore."""
+    loop = asyncio.get_running_loop()
+    n_files = sum(1 for _ in Path(target_dir).rglob("*") if _.is_file())
+    if n_files == 0:
+        await status.edit_text("Kono file paini.")
+        return
+
+    await status.edit_text(
+        f"{n_files} files ({total/1048576:.1f}MB) — zip hocche..."
+    )
+
+    zipdir = os.path.join(os.path.dirname(target_dir.rstrip(os.sep)), "_zips")
+    os.makedirs(zipdir, exist_ok=True)
+    base = os.path.basename(target_dir.rstrip(os.sep))
+    max_bytes = int(MAX_ZIP_MB * 1024 * 1024)
+
+    await status.edit_text("Zipping...")
+    zips = await asyncio.to_thread(
+        make_zip_parts, target_dir, zipdir, base, max_bytes,
+        make_progress_cb(status, loop, "Zipping..."),
+    )
+    if not zips:
+        await status.edit_text("Zip banano jayni.")
+        return
+
+    n_zips = len(zips)
+    await status.edit_text(f"Uploading {n_zips} zip {'file' if n_zips == 1 else 'files'}...")
+    kinds = []
+    for i, zp in enumerate(zips, start=1):
+        size_mb = os.path.getsize(zp) / 1048576
+        kinds.append(await send_one_file(chat, zp, f"{base} — part {i}/{len(zips)} ({size_mb:.1f}MB)"))
+
+    summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} other:{kinds.count('other')} failed:{kinds.count('failed')}"
+    print(f"Send kinds: {summary}", flush=True)
+    await status.edit_text(f"Done! {n_files} files, {len(zips)} zip ({summary}).")
 
 
 def blocking_mega_download(url: str, workdir: str):
@@ -1018,6 +1223,50 @@ async def send_mega(message, url: str):
                 await status.edit_text(f"Error: {err[:300]}")
             except Exception:
                 pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+TERA_ERRORS = {
+    'BAD_LINK': "Link bujha jayni. Terabox share link dao.",
+    'PAGE_FAIL': "Terabox page khule nai. Link / network check koro.",
+    'VERIFY': "Terabox verification chacche (VPS IP block). Pore try koro ba cookie lagbe.",
+    'EXPIRED': "Link expired/deleted. Notun share link dao.",
+    'EMPTY': "Ei share-e kono file paini.",
+}
+
+
+async def send_terabox(message, url: str):
+    """Terabox share link -> files namay -> zip -> send (gallery flow reuse)."""
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Connecting to Terabox...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        target = await asyncio.to_thread(
+            blocking_terabox_download, url, workdir,
+            make_byte_progress_cb(status, loop, "Downloading from Terabox...", 0),
+        )
+        if not target:
+            await status.edit_text("Download fail. Link check koro.")
+            return
+        total = 0
+        for root, _, fns in os.walk(target):
+            for fn in fns:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+        await zip_and_send(status, message.chat, target, total)
+    except ValueError as e:
+        msg = TERA_ERRORS.get(str(e), None)
+        if msg is None and str(e).startswith('ERRNO_'):
+            msg = "Terabox login/verification chacche. Pore try koro."
+        await status.edit_text(msg or f"Error: {str(e)[:200]}")
+    except Exception as e:
+        try:
+            await status.edit_text(f"Error: {str(e)[:300]}")
+        except Exception:
+            pass
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

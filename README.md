@@ -169,6 +169,17 @@ https://mega.nz/file/AbC123#keyXYZ
 * Free IP quota sesh hole `Mega free quota sesh` dekhabe — pore try koro ba `MEGA_EMAIL`/`MEGA_PASSWORD` env dao (quota bare)
 * Folder link (`/folder/...`) ekhono supported na
 
+## 6c. Terabox share link
+
+```
+https://1024terabox.com/s/1AbC2dEf
+```
+
+* Share-er sob file namiye **zip** kore pathabe (gallery flow — progress bar soho)
+* Verification captcha asle clean message dibe (VPS IP-block hole pore try koro)
+* Expired/deleted link-e clean message
+* Experimental — real link diye test kore confirm koro
+
 ---
 
 ## 7. Run locally (test on PC)
