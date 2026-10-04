@@ -2075,7 +2075,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     # 1. video thakle video only (best first)
     for i, vu in enumerate(fb_candidate_videos(page), start=1):
         if fetch(vu, 'video', i):
-            return target_dir
+            return target_dir, 1
 
     # 2. photo set: EXACT nodes union (viewer full-size) -> fallback scoped
     import hashlib
@@ -2116,7 +2116,8 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
     if not files:
         raise ValueError("NO_PHOTO")
-    return target_dir
+    print(f" FB final: {len(files)}/{declared or '?'} files", flush=True)
+    return target_dir, declared
 
 
 async def send_facebook(message, url: str):
@@ -2126,7 +2127,7 @@ async def send_facebook(message, url: str):
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         try:
-            target = await asyncio.to_thread(
+            target, declared = await asyncio.to_thread(
                 blocking_facebook_download, url, workdir,
                 make_byte_progress_cb(status, loop, "Downloading...", 0),
             )
@@ -2142,6 +2143,9 @@ async def send_facebook(message, url: str):
         if not files:
             await status.edit_text("Kono file paini.")
             return
+        short_note = ""
+        if declared and len(files) < declared:
+            short_note = f" ({len(files)}/{declared} found — cookies.txt for full)"
         await status.edit_text(f"{len(files)} ta file pathacchi (original)...")
         chat = message.chat
         kinds, sent = [], 0
@@ -2159,7 +2163,7 @@ async def send_facebook(message, url: str):
                     pass
         summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} failed:{kinds.count('failed')}"
         print(f"FB send kinds: {summary}", flush=True)
-        await status.edit_text(f"Done! {sent}/{len(files)} files sent ({summary}).")
+        await status.edit_text(f"Done! {sent}/{len(files)} files sent ({summary}){short_note}.")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
