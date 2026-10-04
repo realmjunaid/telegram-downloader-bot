@@ -729,7 +729,7 @@ def is_allowed(user_id: int) -> bool:
         return True
 
 
-def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int):
+def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, progress_cb=None):
     """src_dir-er files size onujayi multiple zip-e vag kore. Returns [zip_paths]."""
     files = sorted([p for p in Path(src_dir).rglob("*") if p.is_file() and not p.name.endswith(".tmp")])
     if not files:
@@ -752,7 +752,8 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int):
         part += 1
 
     open_new_part()
-    for f in files:
+    total = len(files)
+    for n, f in enumerate(files, start=1):
         fsize = f.stat().st_size
         # single file-i limit er besi holeo alada zip-e dhukao (Telegram emniteo katbe)
         if cur_size > 0 and cur_size + fsize > max_bytes:
@@ -761,6 +762,11 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int):
         arc = os.path.relpath(f, src_dir)
         cur_zip.write(f, arc)
         cur_size += fsize
+        if progress_cb is not None:
+            try:
+                progress_cb(n, total)
+            except Exception:
+                pass
 
     if cur_zip:
         cur_zip.close()
@@ -827,7 +833,7 @@ async def _safe_edit(status, text: str):
         pass
 
 
-def make_progress_cb(status, loop):
+def make_progress_cb(status, loop, label="Downloading..."):
     """Worker thread theke status message-e progress bar update kore (throttled)."""
     state = {'t': 0.0}
 
@@ -839,7 +845,7 @@ def make_progress_cb(status, loop):
         pct = int(done * 100 / max(total, 1))
         bar = '█' * (pct // 10) + '░' * (10 - pct // 10)
         asyncio.run_coroutine_threadsafe(
-            _safe_edit(status, f"Downloading...\n{bar} {pct}% ({done}/{total})"),
+            _safe_edit(status, f"{label}\n{bar} {pct}% ({done}/{total})"),
             loop,
         )
 
@@ -896,7 +902,7 @@ async def send_as_zip(message, url: str):
 
         # 2. Download with progress bar
         target, total = await asyncio.to_thread(
-            blocking_download, url, workdir, make_progress_cb(status, loop), info
+            blocking_download, url, workdir, make_progress_cb(status, loop, "Downloading..."), info
         )
 
         if not target:
@@ -917,7 +923,12 @@ async def send_as_zip(message, url: str):
         base = os.path.basename(target.rstrip(os.sep))
         max_bytes = int(MAX_ZIP_MB * 1024 * 1024)
 
-        zips = await asyncio.to_thread(make_zip_parts, target, zipdir, base, max_bytes)
+        # 3. Zip with progress bar
+        await status.edit_text("Zipping...")
+        zips = await asyncio.to_thread(
+            make_zip_parts, target, zipdir, base, max_bytes,
+            make_progress_cb(status, loop, "Zipping..."),
+        )
         if not zips:
             await status.edit_text("Zip banano jayni.")
             return
