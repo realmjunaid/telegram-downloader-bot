@@ -891,6 +891,7 @@ from telegram.error import RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     MessageHandler,
     ContextTypes,
     filters,
@@ -912,6 +913,9 @@ MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
 
 URL_RE = re.compile(r'https?://[^\s]+')
+
+START_TIME = time.time()
+ACTIVE_JOBS = 0
 
 # YT quality choice: key -> {"url": ..., "user_id": ...}
 PENDING_Q = {}
@@ -1076,11 +1080,69 @@ def make_byte_progress_cb(status, loop, label, total_bytes):
     return cb
 
 
+async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Link pathao — ami download kore Telegram-e diye dibo.\n\n"
+        "Supported:\n"
+        "- Gallery (e-hentai / pawchive) -> zip\n"
+        "- Mega file/folder link\n"
+        "- Terabox share link\n"
+        "- YouTube / FB / IG / TikTok video\n"
+        "- Jekono direct file link\n\n"
+        "Commands: /status /ping /help"
+    )
+
+
+async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    t0 = time.monotonic()
+    m = await update.message.reply_text("Pong...")
+    ms = int((time.monotonic() - t0) * 1000)
+    await m.edit_text(f"Pong! {ms}ms")
+
+
+async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    up = int(time.time() - START_TIME)
+    h, rem = divmod(up, 3600)
+    mnt, sec = divmod(rem, 60)
+    try:
+        free = shutil.disk_usage(tempfile.gettempdir()).free
+        disk = human_size(free)
+    except Exception:
+        disk = "?"
+    await update.message.reply_text(
+        f"Status: online\n"
+        f"Uptime: {h}h {mnt}m {sec}s\n"
+        f"Active jobs: {ACTIVE_JOBS}\n"
+        f"Disk free: {disk}"
+    )
+
+
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Gallery link -> scan (count + size) -> download bar -> zip bar -> upload. Max single zip 2GB.\n\n"
+        "Mega file -> direct. Mega folder -> zip.\n"
+        "Terabox share -> files -> zip.\n"
+        "YouTube video -> quality button. Shorts/FB/IG/TikTok -> auto 1080p.\n"
+        "Onno link -> direct file (1 ta hole document, onekgula hole zip, max 20 link).\n\n"
+        "Limits: 2GB max file/zip, 60 min max video, no live stream.\n"
+        "Sob temp file send-er por auto-delete hoy."
+    )
+
+
 async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     if not update.message or not update.message.text:
         return
+    global ACTIVE_JOBS
+    ACTIVE_JOBS += 1
+    try:
+        await route_url(update)
+    finally:
+        ACTIVE_JOBS -= 1
+
+
+async def route_url(update: Update):
     urls = URL_RE.findall(update.message.text)
     if not urls:
         return
@@ -1709,8 +1771,13 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Unauthorized.")
         return
     status = await q.edit_message_text("Starting download...")
-    await download_and_send_video(status, q.message.chat, item["url"], height,
-                                  asyncio.get_running_loop())
+    global ACTIVE_JOBS
+    ACTIVE_JOBS += 1
+    try:
+        await download_and_send_video(status, q.message.chat, item["url"], height,
+                                      asyncio.get_running_loop())
+    finally:
+        ACTIVE_JOBS -= 1
 
 
 def direct_filename(url, resp):
@@ -1884,6 +1951,10 @@ def main():
     if API_BASE_FILE_URL:
         builder = builder.base_file_url(API_BASE_FILE_URL)
     app = builder.build()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(on_quality_choice, pattern=r"^q:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, url_listener))
     print(f"Bot running... (MAX_ZIP_MB={MAX_ZIP_MB})")
