@@ -1864,12 +1864,6 @@ def is_fb_url(url):
     return any(d in low for d in FB_DOMAINS)
 
 
-def fb_photo_id(url):
-    """scontent photo ID (xxx_yyy_zzz_n) — same photo-r variant group korte."""
-    m = re.search(r'(\d+_\d+_\d+_n)\.', url)
-    return m.group(1) if m else url.split('?')[0]
-
-
 def fb_big_variant(url):
     """ctp thumb param -> s2048 full (signature same thake, CDN boro dey)."""
     if 'ctp=' in url:
@@ -1877,21 +1871,75 @@ def fb_big_variant(url):
     return url
 
 
-def fb_candidate_images(page):
-    """og:image first, tarpor sob scontent photo URL (query chara dedupe)."""
-    out = []
-    m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
+def fb_story_ids(final_url):
+    """Redirected URL theke (pageid, postid). /<page>/posts/<post> format."""
+    m = re.search(r'/(\d+)/posts/(\d+)', final_url)
     if m:
-        out.append(m.group(1).replace('&amp;', '&'))
-    for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', page):
-        out.append(u.replace('\\/', '/').replace('&amp;', '&'))
-    seen, uniq = set(), []
-    for u in out:
-        key = u.split('?')[0]
-        if key not in seen:
-            seen.add(key)
-            uniq.append(u)
-    return uniq[:40]
+        return m.group(1), m.group(2)
+    m = re.search(r'story_fbid=(\d+).*?[?&]id=(\d+)', final_url)
+    if m:
+        return m.group(2), m.group(1)
+    return None, None
+
+
+def fb_album_fbids(sess, pageid, postid):
+    """m.story page theke oi post-er album-er photo fbid list (boro group).
+    Profile-pic set (p.) bad jay — sudhu album (a.) group ney."""
+    try:
+        r = sess.get(
+            f'https://m.facebook.com/story.php?story_fbid={postid}&id={pageid}',
+            timeout=40)
+    except Exception:
+        return []
+    if r.status_code != 200:
+        return []
+    links = re.findall(r'photo\.php\?fbid=(\d+)&set=([ap])\.(\d+)', r.text)
+    groups = {}
+    for fbid, kind, sid in links:
+        if kind != 'a':
+            continue
+        groups.setdefault(sid, [])
+        if fbid not in groups[sid]:
+            groups[sid].append(fbid)
+    if not groups:
+        return []
+    best = max(groups.values(), key=len)
+    return best
+
+
+def fb_photo_best(sess, fbid):
+    """m.photo.php theke sobcheye boro scontent image URL (HEAD diye).
+    UI icon/profile-pic auto-bad jay."""
+    try:
+        r = sess.get(f'https://m.facebook.com/photo.php?fbid={fbid}', timeout=40)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    cands = []
+    for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', r.text):
+        u = u.replace('\\/', '/').replace('&amp;', '&')
+        if u not in cands:
+            cands.append(u)
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+
+    def head_size(u):
+        try:
+            h = sess.head(u, headers={'Referer': 'https://m.facebook.com/'},
+                          timeout=20, allow_redirects=True)
+            if h.status_code == 200:
+                return int(h.headers.get('Content-Length') or 0)
+        except Exception:
+            pass
+        return 0
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        sizes = list(ex.map(head_size, cands))
+    best = max(range(len(cands)), key=lambda i: sizes[i])
+    return cands[best] if sizes[best] else cands[0]
 
 
 def fb_candidate_videos(page):
@@ -1977,17 +2025,24 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         if fetch(vu, 'video', i):
             return target_dir
 
-    # 2. photo set: proti photo-ID-r s2048 variant (fail hole original) + hash dedupe
+    # 2. photo set: SUDHU oi post-er album (onno post/sticker asbe na)
     import hashlib
     seen_hash = set()
-    seen_id, pairs = set(), []
-    for u in fb_candidate_images(page):
-        gid = fb_photo_id(u)
-        if gid in seen_id:
-            continue
-        seen_id.add(gid)
-        big = fb_big_variant(u)
-        pairs.append((big, u) if big != u else (u, None))
+    pairs = []
+    pageid, postid = fb_story_ids(r.url)
+    if pageid and postid:
+        for fbid in fb_album_fbids(sess, pageid, postid):
+            best = fb_photo_best(sess, fbid)
+            if best:
+                big = fb_big_variant(best)
+                pairs.append((big, best) if big != best else (best, None))
+    if not pairs:
+        # fallback: cover (og:image) only — puro page scrape NA (onno post dhukto)
+        m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
+        if m:
+            u = m.group(1).replace('&amp;', '&')
+            big = fb_big_variant(u)
+            pairs.append((big, u) if big != u else (u, None))
     n = 0
     for big_u, orig_u in pairs:
         n += 1

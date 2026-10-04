@@ -196,7 +196,7 @@ https://instagram.com/reel/xxxx
 * **Shorts + FB/IG/TikTok** auto-highest (button nai)
 * **FB/IG photo post + carousel** — image gulo original-e **direct document** (zip na)
 * 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
-* **FB photo post** — custom scraper (yt-dlp FB parse fail kore): video thakle video document, photo set s2048 full-size-e sob direct document (hash-dedupe, zip na)
+* **FB photo post** — m.story album theke SUDHU oi post-er photo (onno post/sticker asbe na), s2048 full-size, sob direct document
 * **IG photo/carousel** — custom scraper (yt-dlp photo-te fail): s1080 originals, sob direct document. Video/reel hole yt-dlp fallback
 * Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
 
