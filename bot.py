@@ -701,7 +701,7 @@ TERA_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 
 VIDEO_DOMAINS = (
     'youtube.com', 'youtu.be',
-    'instagram.com', 'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com',
+    'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com',
 )
 FB_DOMAINS = ('facebook.com', 'fb.watch', 'fb.com')
 # 60 min-er besi video refuse (2GB cross + ghonta lege jay)
@@ -1184,6 +1184,9 @@ async def route_url(update: Update):
         return
     if is_fb_url(url):
         await send_facebook(update.message, url)
+        return
+    if is_instagram_url(url):
+        await send_instagram(update.message, url)
         return
     if is_video_url(url):
         await send_video(update.message, url)
@@ -2052,6 +2055,192 @@ async def send_facebook(message, url: str):
                     pass
         summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} failed:{kinds.count('failed')}"
         print(f"FB send kinds: {summary}", flush=True)
+        await status.edit_text(f"Done! {sent}/{len(files)} files sent ({summary}).")
+    except Exception as e:
+        try:
+            await status.edit_text(f"Error: {str(e)[:300]}")
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def is_video_url(url):
+    low = url.lower()
+    return any(d in low for d in VIDEO_DOMAINS)
+
+
+def is_instagram_url(url):
+    return 'instagram.com' in url.lower()
+
+
+def parse_ig_shortcode(url):
+    m = re.search(r'instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    return m.group(1) if m else None
+
+
+def ig_best_block_url(block):
+    """Candidates block theke sobcheye boro rendition (s1080 > p720 > base)."""
+    urls = [u.replace('\\/', '/').replace('\\u0026', '&')
+            for u in re.findall(r'"url"\s*:\s*"([^"]+)"', block)]
+    if not urls:
+        return None
+    for pat in ('s1080x1080', 'p1080x1080', 'p720x720', 's750x750', 's640x640'):
+        for u in urls:
+            if pat in u:
+                return u
+    return urls[0]
+
+
+def blocking_instagram_download(url, workdir, byte_cb=None):
+    """IG post: photo/carousel -> s1080 originals. Returns (target_dir, is_video).
+    Video post hole video file. Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
+    code = parse_ig_shortcode(url)
+    if not code:
+        raise ValueError("BAD_LINK")
+    sess = get_scraper()
+    try:
+        r = sess.get(f'https://www.instagram.com/p/{code}/', timeout=40)
+    except Exception:
+        raise ValueError("PAGE_FAIL")
+    if r.status_code != 200 or len(r.text) < 50000:
+        raise ValueError("PAGE_FAIL")
+    page = r.text
+
+    target_dir = os.path.join(workdir, sanitize_folder_name(f"ig_{code}"))
+    os.makedirs(target_dir, exist_ok=True)
+    dl_headers = {'Referer': 'https://www.instagram.com/', 'Accept': '*/*'}
+    done_all, total_known = [0], [0]
+
+    def fetch(u, i, ext_hint='.jpg'):
+        try:
+            d = sess.get(u, headers=dl_headers, timeout=60, stream=True)
+            if d.status_code != 200:
+                return None
+            ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
+            if 'text/html' in ctype:
+                return None
+            ext = ext_hint
+            if 'png' in ctype:
+                ext = '.png'
+            elif 'webp' in ctype:
+                ext = '.webp'
+            elif 'mp4' in ctype or 'video' in ctype:
+                ext = '.mp4'
+            out = os.path.join(target_dir, f"{i:03d}{ext}")
+            wrote = 0
+            with open(out, 'wb') as f:
+                for chunk in d.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    if wrote + len(chunk) > 1900 * 1024 * 1024:
+                        break
+                    f.write(chunk)
+                    wrote += len(chunk)
+                    done_all[0] += len(chunk)
+                    if byte_cb is not None:
+                        try:
+                            byte_cb(done_all[0], total_known[0])
+                        except Exception:
+                            pass
+            if wrote < 10240:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+                return None
+            return out
+        except Exception:
+            return None
+
+    # 1. photo/carousel blocks (profile-pic bad dite cover dup URL-dedupe)
+    seen, wins = set(), []
+    for b in re.findall(r'"candidates"\s*:\s*\[(.*?)\]', page):
+        pick = ig_best_block_url(b)
+        if pick and pick not in seen:
+            seen.add(pick)
+            wins.append(pick)
+    if wins:
+        import hashlib
+        seen_hash = set()
+        for i, u in enumerate(wins, start=1):
+            out = fetch(u, i)
+            if not out:
+                continue
+            try:
+                with open(out, 'rb') as f:
+                    h = hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                continue
+            if h in seen_hash:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+                continue
+            seen_hash.add(h)
+        files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
+        if files:
+            return target_dir, False
+        # blocks chilo kintu download fail — video hote pare, niche try
+
+    # 2. video post
+    vids = sorted(set(
+        u.replace('\\/', '/').replace('\\u0026', '&')
+        for u in re.findall(r'"video_url"\s*:\s*"([^"]+)"', page)
+    ))
+    for i, vu in enumerate(vids[:3], start=1):
+        if fetch(vu, i, '.mp4'):
+            return target_dir, True
+
+    files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
+    if not files:
+        raise ValueError("NO_PHOTO")
+    return target_dir, False
+
+
+async def send_instagram(message, url: str):
+    """IG post: photo/carousel direct document, video direct, na hole yt-dlp fallback."""
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Fetching Instagram post...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        try:
+            target, is_video = await asyncio.to_thread(
+                blocking_instagram_download, url, workdir,
+                make_byte_progress_cb(status, loop, "Downloading...", 0),
+            )
+        except ValueError as e:
+            code = str(e)
+            if code == "BAD_LINK":
+                await status.edit_text("Link bujha jayni. IG post/reel link dao.")
+            elif code == "NO_PHOTO":
+                # reels/login-wall: yt-dlp fallback
+                await send_video(message, url)
+            else:
+                await status.edit_text("Instagram page khule nai. Link check koro.")
+            return
+        files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
+        if not files:
+            await status.edit_text("Kono file paini.")
+            return
+        await status.edit_text(f"{len(files)} ta file pathacchi (original)...")
+        chat = message.chat
+        kinds, sent = [], 0
+        for i, fp in enumerate(files, start=1):
+            try:
+                kinds.append(await send_one_file(chat, fp, fp.name))
+                sent += 1
+            except Exception as e:
+                kinds.append('failed')
+                print(f"IG send fail {fp.name}: {str(e)[:120]}", flush=True)
+            if i % 20 == 0:
+                try:
+                    await status.edit_text(f"{i}/{len(files)} sent...")
+                except Exception:
+                    pass
+        summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} failed:{kinds.count('failed')}"
+        print(f"IG send kinds: {summary}", flush=True)
         await status.edit_text(f"Done! {sent}/{len(files)} files sent ({summary}).")
     except Exception as e:
         try:
