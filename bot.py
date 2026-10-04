@@ -1166,12 +1166,148 @@ async def zip_and_send(status, chat, target_dir: str, total: int):
     await status.edit_text(f"Done! {n_files} files, {len(zips)} zip ({summary}).")
 
 
-def blocking_mega_download(url: str, workdir: str):
-    """Mega file link theke 1 ta file namay. Returns path, naile exception.
-    Folder link ekhono supported na."""
+def mega_folder_api(node, payload):
+    """Mega share-context (n=node) API call. int return = errno."""
+    import random
+    import requests
+    seq = random.randint(100000, 999999)
+    ep = f'https://g.api.mega.co.nz/cs?id={seq}&n={node}'
+    r = requests.post(ep, json=payload, timeout=30)
+    d = r.json()
+    d = d[0] if isinstance(d, list) else d
+    if isinstance(d, int):
+        raise ValueError(f'MEGA_ERRNO_{d}')
+    return d
+
+
+def mega_fold_key(k8):
+    return (k8[0] ^ k8[4], k8[1] ^ k8[5], k8[2] ^ k8[6], k8[3] ^ k8[7])
+
+
+def blocking_mega_folder_download(url, workdir, byte_cb=None):
+    """Mega folder link -> sob file namay (decrypt soho). Returns target_dir."""
+    import requests
+    from Crypto.Cipher import AES
+    from Crypto.Util import Counter
+    from mega.crypto import (
+        a32_to_str, base64_url_decode, decrypt_attr, decrypt_key,
+        get_chunks, str_to_a32,
+    )
+    m = re.search(r'folder/([A-Za-z0-9_-]+)#([A-Za-z0-9_-]+)', url)
+    if not m:
+        raise ValueError("BAD_LINK")
+    node, key_b64 = m.group(1), m.group(2)
+    try:
+        urlkey = str_to_a32(base64_url_decode(key_b64))
+    except Exception:
+        raise ValueError("BAD_LINK")
+
+    try:
+        data = mega_folder_api(node, [{'a': 'f', 'c': 1, 'ca': 1, 'r': 1}])
+    except ValueError as e:
+        code = str(e)
+        if 'MEGA_ERRNO_-9' in code:
+            raise ValueError("EXPIRED")
+        if 'MEGA_ERRNO_-16' in code or 'MEGA_ERRNO_-18' in code:
+            raise ValueError("QUOTA")
+        if 'MEGA_ERRNO_-11' in code:
+            raise ValueError("EACCESS")
+        raise
+    nodes = data.get('f', [])
+
+    files = []
+    for f in nodes:
+        if f.get('t') != 0 or ':' not in (f.get('k') or ''):
+            continue
+        try:
+            fk8 = decrypt_key(str_to_a32(base64_url_decode(f['k'].rsplit(':', 1)[1])), urlkey)
+            enc_at = f.get('a') or f.get('at')
+            at = decrypt_attr(base64_url_decode(enc_at), mega_fold_key(fk8)) if enc_at else None
+            if not at or not at.get('n'):
+                continue
+            files.append((f['h'], at['n'], int(f.get('s') or 0), fk8))
+        except Exception:
+            continue
+    if not files:
+        raise ValueError("EMPTY")
+
+    target_dir = os.path.join(workdir, sanitize_folder_name(f"mega_{node[:8]}"))
+    os.makedirs(target_dir, exist_ok=True)
+    total_all = sum(s for _, _, s, _ in files)
+    done_all = [0]
+
+    for handle, name, size, fk8 in files:
+        safe = sanitize_file_name(name)
+        out = os.path.join(target_dir, safe)
+        if os.path.exists(out):
+            stem, dot, ext = safe.rpartition('.')
+            k = 1
+            while os.path.exists(out):
+                out = os.path.join(target_dir, f"{stem}({k}){dot}{ext}" if dot else f"{safe}({k})")
+                k += 1
+        try:
+            g = mega_folder_api(node, [{'a': 'g', 'g': 1, 'n': handle}])
+        except ValueError as e:
+            if 'QUOTA' in str(e) or '-16' in str(e) or '-18' in str(e):
+                raise ValueError("QUOTA")
+            continue
+        tmp_url = g.get('g', '') if isinstance(g, dict) else ''
+        if not tmp_url:
+            continue
+        k = mega_fold_key(fk8)
+        iv = fk8[4:6]
+        meta_mac = fk8[6:8]
+        k_str = a32_to_str(k)
+        counter = Counter.new(128, initial_value=((iv[0] << 32) + iv[1]) << 64)
+        aes = AES.new(k_str, AES.MODE_CTR, counter=counter)
+        mac_str = '\0' * 16
+        mac_encryptor = AES.new(k_str, AES.MODE_CBC, mac_str.encode("utf8"))
+        iv_str = a32_to_str([iv[0], iv[1], iv[0], iv[1]])
+        r = requests.get(tmp_url, stream=True, timeout=60)
+        r.raise_for_status()
+        raw = r.raw
+        with open(out, 'wb') as f:
+            for _, chunk_size in get_chunks(size):
+                chunk = raw.read(chunk_size)
+                if not chunk:
+                    break
+                chunk = aes.decrypt(chunk)
+                f.write(chunk)
+                done_all[0] += len(chunk)
+                if byte_cb is not None:
+                    try:
+                        byte_cb(done_all[0], total_all)
+                    except Exception:
+                        pass
+                encryptor = AES.new(k_str, AES.MODE_CBC, iv_str)
+                i = 0
+                for i in range(0, len(chunk) - 16, 16):
+                    encryptor.encrypt(chunk[i:i + 16])
+                if len(chunk) > 16:
+                    i += 16
+                block = chunk[i:i + 16]
+                if len(block) % 16:
+                    block += b'\0' * (16 - (len(block) % 16))
+                mac_str = mac_encryptor.encrypt(encryptor.encrypt(block))
+        file_mac = str_to_a32(mac_str)
+        if (file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]) != meta_mac:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+            continue
+    got = [p for p in Path(target_dir).rglob("*") if p.is_file()]
+    if not got:
+        raise ValueError("EMPTY")
+    return target_dir
+
+
+def blocking_mega_download(url: str, workdir: str, byte_cb=None):
+    """Mega file link theke 1 ta file, folder link theke sob file namay.
+    Returns file path ba folder path, naile exception."""
+    if '/folder/' in url or '#F!' in url or re.search(r'folder/([A-Za-z0-9_-]+)#', url):
+        return blocking_mega_folder_download(url, workdir, byte_cb)
     from mega import Mega
-    if '/folder/' in url or '#F!' in url:
-        raise ValueError("FOLDER_LINK")
     mega = Mega()
     m = mega.login(MEGA_EMAIL, MEGA_PASSWORD) if MEGA_EMAIL else mega.login()
     got = m.download_url(url, dest_path=workdir)
@@ -1187,20 +1323,32 @@ def blocking_mega_download(url: str, workdir: str):
 
 
 async def send_mega(message, url: str):
-    """Mega file link: zip hole direct zip, single file hole direct document."""
+    """Mega link: single file hole direct document, folder/multiple hole zip."""
+    loop = asyncio.get_running_loop()
     status = await message.reply_text("Downloading from Mega...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
-        try:
-            target = await asyncio.to_thread(blocking_mega_download, url, workdir)
-        except ValueError as e:
-            if str(e) == "FOLDER_LINK":
-                await status.edit_text("Mega folder link ekhono supported na — file link dao.")
-                return
-            raise
+        target = await asyncio.to_thread(
+            blocking_mega_download, url, workdir,
+            make_byte_progress_cb(status, loop, "Downloading from Mega...", 0),
+        )
         if not target:
             await status.edit_text("Download fail. Link check koro.")
             return
+
+        if os.path.isdir(target):
+            files = [p for p in Path(target).rglob("*") if p.is_file()]
+            if len(files) == 1:
+                target = files[0]
+            else:
+                total = 0
+                for p in files:
+                    try:
+                        total += os.path.getsize(p)
+                    except OSError:
+                        pass
+                await zip_and_send(status, message.chat, target, total)
+                return
 
         size_mb = os.path.getsize(target) / 1048576
         if size_mb > 2000:
@@ -1208,12 +1356,23 @@ async def send_mega(message, url: str):
             return
 
         name = os.path.basename(target)
-        kind = 'zip' if name.lower().endswith(('.zip', '.rar', '.7z')) else 'file'
         await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
         chat = message.chat
         k = await send_one_file(chat, target, name)
         print(f"Mega send kind: {k} ({name})", flush=True)
         await status.edit_text(f"Done! {name} ({size_mb:.1f}MB).")
+    except ValueError as e:
+        code = str(e)
+        msg = {
+            "EXPIRED": "Link expired/deleted. Notun link dao.",
+            "EMPTY": "Ei folder-e kono file paini.",
+            "QUOTA": "Mega free quota sesh (IP limit). Pore try koro ba MEGA_EMAIL/PASSWORD env dao.",
+            "EACCESS": "Access denied. Link check koro.",
+            "BAD_LINK": "Link bujha jayni. Mega file/folder link dao.",
+        }.get(code)
+        if msg is None and code.startswith("MEGA_ERRNO_"):
+            msg = "Mega error. Pore try koro."
+        await status.edit_text(msg or f"Error: {code[:200]}")
     except Exception as e:
         err = str(e)
         if 'quota' in err.lower() or 'overquota' in err.lower() or 'EOVERQUOTA' in err:

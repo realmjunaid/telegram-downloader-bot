@@ -167,7 +167,7 @@ https://mega.nz/file/AbC123#keyXYZ
 * Single image/video/doc hole **direct document** hisebe jabe
 * 2GB besi hole refuse korbe
 * Free IP quota sesh hole `Mega free quota sesh` dekhabe — pore try koro ba `MEGA_EMAIL`/`MEGA_PASSWORD` env dao (quota bare)
-* Folder link (`/folder/...`) ekhono supported na
+* Folder link (`/folder/...`) supported — sob file namiye **zip** kore pathabe (live test pass, 17 file verified)
 
 ## 6c. Terabox share link
 
