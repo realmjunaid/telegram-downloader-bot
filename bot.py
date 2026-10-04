@@ -1871,85 +1871,37 @@ def fb_big_variant(url):
     return url
 
 
-def fb_story_ids(final_url):
-    """Redirected URL theke (pageid, postid). /<page>/posts/<post> format."""
-    m = re.search(r'/(\d+)/posts/(\d+)', final_url)
-    if m:
-        return m.group(1), m.group(2)
-    m = re.search(r'story_fbid=(\d+).*?[?&]id=(\d+)', final_url)
-    if m:
-        return m.group(2), m.group(1)
-    return None, None
-
-
-def fb_album_fbids(sess, pageid, postid):
-    """m.story page theke oi post-er album-er photo fbid list (boro group).
-    Profile-pic set (p.) bad jay — sudhu album (a.) group ney."""
-    try:
-        r = sess.get(
-            f'https://m.facebook.com/story.php?story_fbid={postid}&id={pageid}',
-            timeout=40)
-    except Exception:
-        return []
-    if r.status_code != 200:
-        return []
-    links = re.findall(r'photo\.php\?fbid=(\d+)&set=([ap])\.(\d+)', r.text)
-    groups = {}
-    for fbid, kind, sid in links:
-        if kind != 'a':
-            continue
-        groups.setdefault(sid, [])
-        if fbid not in groups[sid]:
-            groups[sid].append(fbid)
-    if not groups:
-        return []
-    best = max(groups.values(), key=len)
-    return best
-
-
-def fb_photo_best(sess, fbid):
-    """m.photo.php theke sobcheye boro scontent image URL.
-    cstp mx-area diye pick (HEAD request lage na — throttle kom).
-    UI icon/profile-pic auto-bad jay. Throttle hole retry."""
-    for attempt in range(4):
-        try:
-            r = sess.get(f'https://m.facebook.com/photo.php?fbid={fbid}', timeout=40)
-        except Exception:
-            time.sleep(3 * (attempt + 1))
-            continue
-        if r.status_code != 200:
-            time.sleep(3 * (attempt + 1))
-            continue
-        break
-    else:
-        print(f" FB photo page fail: {fbid}", flush=True)
-        return None
-    time.sleep(3)  # rapid hit-e throttle khay
-    cands = []
-    for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', r.text):
+def fb_scoped_pairs(page):
+    """WWW page theke SUDHU oi post-er photo (story_attachment-er kache + og cover).
+    Onno post (115KB dure) + sticker bad jay. Returns [(big_url, orig_url)]."""
+    full_by_id = {}
+    for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', page):
         u = u.replace('\\/', '/').replace('&amp;', '&')
-        if u not in cands:
-            cands.append(u)
-    if not cands:
-        return None
-    if len(cands) == 1:
-        return cands[0]
-
-    def mx_area(u):
-        m = re.search(r'cstp=mx(\d+)x(\d+)', u)
-        if m:
-            try:
-                return int(m.group(1)) * int(m.group(2))
-            except ValueError:
-                pass
-        return 0
-
-    def has_ctp(u):
-        # profile-pic URL-e ctp khali thake — photo-te size thake
-        m = re.search(r'ctp=([^&]*)', u)
-        return 1 if m and m.group(1) else 0
-
-    return max(cands, key=lambda u: (has_ctp(u), mx_area(u), len(u)))
+        m = re.search(r'(\d+_\d+_\d+_n)', u)
+        if m and m.group(1) not in full_by_id:
+            full_by_id[m.group(1)] = u
+    marks = [m.start() for m in re.finditer('story_attachment', page)]
+    scoped = []
+    for m in re.finditer(r't39\.99422-6/(\d+_\d+_\d+_n)', page):
+        pid = m.group(1)
+        if pid in scoped:
+            continue
+        if marks and min(abs(m.start() - x) for x in marks) > 60000:
+            continue
+        scoped.append(pid)
+    mo = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
+    if mo:
+        mi = re.search(r'(\d+_\d+_\d+_n)', mo.group(1))
+        if mi and mi.group(1) not in scoped:
+            scoped.insert(0, mi.group(1))
+    pairs = []
+    for pid in scoped:
+        u = full_by_id.get(pid)
+        if not u:
+            continue
+        big = fb_big_variant(u)
+        pairs.append((big, u) if big != u else (u, None))
+    return pairs
 
 
 def fb_candidate_videos(page):
@@ -2035,21 +1987,11 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         if fetch(vu, 'video', i):
             return target_dir
 
-    # 2. photo set: SUDHU oi post-er album (onno post/sticker asbe na)
+    # 2. photo set: SUDHU oi post (scoped WWW — album supplement junk dhukay, bad)
     import hashlib
     seen_hash = set()
-    pairs = []
-    pageid, postid = fb_story_ids(r.url)
-    if pageid and postid:
-        fbids = fb_album_fbids(sess, pageid, postid)
-        print(f" FB album: {len(fbids)} photos (post {postid})", flush=True)
-        for fbid in fbids:
-            best = fb_photo_best(sess, fbid)
-            if best:
-                big = fb_big_variant(best)
-                pairs.append((big, best) if big != best else (best, None))
-            else:
-                print(f" FB photo skip (no image): {fbid}", flush=True)
+    pairs = fb_scoped_pairs(page)
+    print(f" FB scoped: {len(pairs)} photos", flush=True)
     if not pairs:
         # fallback: cover (og:image) only — puro page scrape NA (onno post dhukto)
         m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
