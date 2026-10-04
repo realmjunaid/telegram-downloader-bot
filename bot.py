@@ -46,6 +46,20 @@ def get_scraper():
         _thread_local.scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
         )
+        # cookies.txt thakle login session (FB full render + login wall bypass)
+        try:
+            import http.cookiejar as _cj
+            if os.path.exists('cookies.txt'):
+                jar = _cj.MozillaCookieJar('cookies.txt')
+                jar.load(ignore_discard=True, ignore_expires=True)
+                n = 0
+                for c in jar:
+                    # domain thik rekhe session-e daw (onno site-e leak hobe na)
+                    _thread_local.scraper.cookies.set_cookie(c)
+                    n += 1
+                print(f" cookies.txt loaded ({n} cookies)", flush=True)
+        except Exception as e:
+            print(f" cookies.txt load fail: {str(e)[:100]}", flush=True)
     return _thread_local.scraper
 
 # Custom HTTP Headers
@@ -1871,6 +1885,43 @@ def fb_big_variant(url):
     return url
 
 
+def fb_attachment_nodes(page):
+    """all_subattachments blocks: [(mediaset_token, declared, items)].
+    items = [(fbid, viewer_uri)], viewer_image = signed full-size.
+    Caller post-ID match kore thik block ney."""
+    out = []
+    for m in re.finditer(r'"all_subattachments"\s*:\s*\{\s*"count"\s*:\s*(\d+)\s*,\s*"nodes"\s*:\s*\[', page):
+        try:
+            total = int(m.group(1))
+        except ValueError:
+            continue
+        # bracket balance kore nodes array sesh khujo
+        depth, i, start = 0, m.end() - 1, m.end() - 1
+        end = -1
+        while i < len(page):
+            c = page[i]
+            if c == '[':
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        if end < 0:
+            continue
+        seg = page[start:end + 1]
+        items = []
+        for nm in re.finditer(
+                r'"viewer_image"\s*:\s*\{[^}]*?"uri"\s*:\s*"([^"]+)"[^}]*?\}\s*,\s*"id"\s*:\s*"(\d+)"\s*,\s*"__isMedia"\s*:\s*"Photo"',
+                seg):
+            u = nm.group(1).replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
+            items.append((nm.group(2), u))
+        tok = re.search(r'"mediaset_token"\s*:\s*"([^"]+)"', page[max(0, m.start() - 2000):m.start()])
+        out.append((tok.group(1) if tok else "", total, items))
+    return out
+
+
 def fb_scoped_pairs(page):
     """WWW page theke SUDHU oi post-er photo (story_attachment-er kache + og cover).
     Onno post (115KB dure) + sticker bad jay. Returns [(big_url, orig_url)]."""
@@ -1924,13 +1975,52 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     """FB share/post link -> video thakle video, naile photo set. Returns target_dir.
     Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
     sess = get_scraper()
-    try:
-        r = sess.get(url, timeout=40)
-    except Exception:
+    # render kokhono full kokhono khali — multi-frontend (www + m) union
+    union, declared, page, postid = {}, 0, "", ""
+    targets = [url]
+    m0 = re.search(r'/(\d+)/posts/(\d+)', url)
+    if m0:
+        targets.append(f"https://m.facebook.com/{m0.group(1)}/posts/{m0.group(2)}/")
+    for attempt in range(6):
+        u = targets[attempt % len(targets)]
+        try:
+            r = sess.get(u, timeout=30)
+        except Exception:
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status_code != 200 or len(r.text) < 5000:
+            time.sleep(2 * (attempt + 1))
+            continue
+        if len(r.text) > len(page):
+            page = r.text
+        if not postid:
+            pm = re.search(r'/posts/(\d+)', r.url)
+            if pm:
+                postid = pm.group(1)
+        try:
+            blocks = fb_attachment_nodes(r.text)
+        except Exception:
+            blocks = []
+        for tok, dec, items in blocks:
+            if dec > declared:
+                declared = dec
+            if postid and postid not in tok and tok:
+                continue  # onno post-er block skip (token chara block nirdosh)
+            for fbid, uu in items:
+                union.setdefault(fbid, uu)
+        try:
+            for big_u, orig_u in fb_scoped_pairs(r.text):
+                m = re.search(r'(\d+_\d+_\d+_n)', orig_u or big_u)
+                key = m.group(1) if m else big_u
+                union.setdefault('s_' + key, big_u)
+        except Exception:
+            pass
+        print(f" FB nodes fetch {attempt + 1}: {len(union)}/{declared or '?'}", flush=True)
+        if declared and len(union) >= declared:
+            break
+        time.sleep(2)
+    if not page:
         raise ValueError("PAGE_FAIL")
-    if r.status_code != 200 or len(r.text) < 5000:
-        raise ValueError("PAGE_FAIL")
-    page = r.text
     low = page.lower()
     if ('login' in low and 'password' in low and 'scontent' not in low
             and 'playable_url' not in low):
@@ -1987,11 +2077,14 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         if fetch(vu, 'video', i):
             return target_dir
 
-    # 2. photo set: SUDHU oi post (scoped WWW — album supplement junk dhukay, bad)
+    # 2. photo set: EXACT nodes union (viewer full-size) -> fallback scoped
     import hashlib
     seen_hash = set()
-    pairs = fb_scoped_pairs(page)
-    print(f" FB scoped: {len(pairs)} photos", flush=True)
+    pairs = [(u, None) for _, u in union.items()]
+    print(f" FB nodes total: {len(pairs)}/{declared or '?'} photos", flush=True)
+    if not pairs:
+        pairs = fb_scoped_pairs(page)
+        print(f" FB scoped fallback: {len(pairs)} photos", flush=True)
     if not pairs:
         # fallback: cover (og:image) only — puro page scrape NA (onno post dhukto)
         m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
