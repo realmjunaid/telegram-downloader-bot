@@ -1235,8 +1235,22 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
     os.makedirs(target_dir, exist_ok=True)
     total_all = sum(s for _, _, s, _ in files)
     done_all = [0]
+    done_lock = threading.Lock()
+    sess = requests.Session()
 
-    for handle, name, size, fk8 in files:
+    def mac_update(encryptor, mac_encryptor, chunk):
+        """Mega-exact MAC, kintu C-level bulk op — per-block Python loop-er bodle."""
+        tail_len = len(chunk) % 16
+        if tail_len:
+            bulk, tail = chunk[:-tail_len], chunk[-tail_len:] + b'\0' * (16 - tail_len)
+        else:
+            bulk, tail = chunk[:-16], chunk[-16:]
+        if bulk:
+            encryptor.encrypt(bulk)
+        return mac_encryptor.encrypt(encryptor.encrypt(tail))
+
+    def fetch_one(item):
+        handle, name, size, fk8 = item
         safe = sanitize_file_name(name)
         out = os.path.join(target_dir, safe)
         if os.path.exists(out):
@@ -1246,56 +1260,75 @@ def blocking_mega_folder_download(url, workdir, byte_cb=None):
                 out = os.path.join(target_dir, f"{stem}({k}){dot}{ext}" if dot else f"{safe}({k})")
                 k += 1
         try:
-            g = mega_folder_api(node, [{'a': 'g', 'g': 1, 'n': handle}])
-        except ValueError as e:
-            if 'QUOTA' in str(e) or '-16' in str(e) or '-18' in str(e):
-                raise ValueError("QUOTA")
-            continue
-        tmp_url = g.get('g', '') if isinstance(g, dict) else ''
-        if not tmp_url:
-            continue
-        k = mega_fold_key(fk8)
-        iv = fk8[4:6]
-        meta_mac = fk8[6:8]
-        k_str = a32_to_str(k)
-        counter = Counter.new(128, initial_value=((iv[0] << 32) + iv[1]) << 64)
-        aes = AES.new(k_str, AES.MODE_CTR, counter=counter)
-        mac_str = '\0' * 16
-        mac_encryptor = AES.new(k_str, AES.MODE_CBC, mac_str.encode("utf8"))
-        iv_str = a32_to_str([iv[0], iv[1], iv[0], iv[1]])
-        r = requests.get(tmp_url, stream=True, timeout=60)
-        r.raise_for_status()
-        raw = r.raw
-        with open(out, 'wb') as f:
-            for _, chunk_size in get_chunks(size):
-                chunk = raw.read(chunk_size)
-                if not chunk:
-                    break
-                chunk = aes.decrypt(chunk)
-                f.write(chunk)
-                done_all[0] += len(chunk)
-                if byte_cb is not None:
-                    try:
-                        byte_cb(done_all[0], total_all)
-                    except Exception:
-                        pass
-                encryptor = AES.new(k_str, AES.MODE_CBC, iv_str)
-                i = 0
-                for i in range(0, len(chunk) - 16, 16):
-                    encryptor.encrypt(chunk[i:i + 16])
-                if len(chunk) > 16:
-                    i += 16
-                block = chunk[i:i + 16]
-                if len(block) % 16:
-                    block += b'\0' * (16 - (len(block) % 16))
-                mac_str = mac_encryptor.encrypt(encryptor.encrypt(block))
-        file_mac = str_to_a32(mac_str)
-        if (file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]) != meta_mac:
             try:
-                os.remove(out)
+                g = mega_folder_api(node, [{'a': 'g', 'g': 1, 'n': handle}])
+            except ValueError as e:
+                if 'QUOTA' in str(e) or '-16' in str(e) or '-18' in str(e):
+                    raise ValueError("QUOTA")
+                return
+            tmp_url = g.get('g', '') if isinstance(g, dict) else ''
+            if not tmp_url:
+                return
+            k = mega_fold_key(fk8)
+            iv = fk8[4:6]
+            meta_mac = fk8[6:8]
+            k_str = a32_to_str(k)
+            counter = Counter.new(128, initial_value=((iv[0] << 32) + iv[1]) << 64)
+            aes = AES.new(k_str, AES.MODE_CTR, counter=counter)
+            mac_str = '\0' * 16
+            mac_encryptor = AES.new(k_str, AES.MODE_CBC, mac_str.encode("utf8"))
+            iv_str = a32_to_str([iv[0], iv[1], iv[0], iv[1]])
+            r = sess.get(tmp_url, stream=True, timeout=60)
+            r.raise_for_status()
+            raw = r.raw
+            try:
+                with open(out, 'wb') as f:
+                    for _, chunk_size in get_chunks(size):
+                        need, parts = chunk_size, []
+                        while need > 0:
+                            piece = raw.read(need)
+                            if not piece:
+                                break
+                            parts.append(piece)
+                            need -= len(piece)
+                        chunk = aes.decrypt(b''.join(parts))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        with done_lock:
+                            done_all[0] += len(chunk)
+                            cur = done_all[0]
+                        if byte_cb is not None:
+                            try:
+                                byte_cb(cur, total_all)
+                            except Exception:
+                                pass
+                        encryptor = AES.new(k_str, AES.MODE_CBC, iv_str)
+                        mac_str = mac_update(encryptor, mac_encryptor, chunk)
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            file_mac = str_to_a32(mac_str)
+            if (file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]) != meta_mac:
+                try:
+                    os.remove(out)  # corrupt file — skip, baki gulo cholbe
+                except OSError:
+                    pass
+                return
+        except ValueError:
+            raise
+        except Exception:
+            try:
+                if os.path.exists(out):
+                    os.remove(out)
             except OSError:
                 pass
-            continue
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, files))
+
     got = [p for p in Path(target_dir).rglob("*") if p.is_file()]
     if not got:
         raise ValueError("EMPTY")
