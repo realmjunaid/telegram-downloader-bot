@@ -881,14 +881,16 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
+    CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
     filters,
@@ -910,6 +912,15 @@ MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
 
 URL_RE = re.compile(r'https?://[^\s]+')
+
+# YT quality choice: key -> {"url": ..., "user_id": ...}
+PENDING_Q = {}
+
+
+def is_youtube_video(url):
+    """Regular YT video (buttons). Shorts auto-highest."""
+    low = url.lower()
+    return ('youtube.com' in low or 'youtu.be' in low) and '/shorts/' not in low
 
 
 def is_allowed(user_id: int) -> bool:
@@ -1480,8 +1491,8 @@ async def send_terabox(message, url: str):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def blocking_ytdlp_download(url, workdir, byte_cb=None):
-    """yt-dlp diye video namay (mp4 <=1080p, 1900MB cap). Returns file path.
+def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
+    """yt-dlp diye video namay (mp4, height cap, 1900MB cap). Returns file path.
     Raises ValueError(LIVE/TOO_LONG/TOO_BIG/LOGIN/NONE)."""
     import yt_dlp
 
@@ -1494,7 +1505,8 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None):
                 pass
 
     opts = {
-        'format': 'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]/best',
+        'format': (f'bv*[height<={height}][ext=mp4]+ba[ext=m4a]/bv*[height<={height}]+ba/'
+                   f'b[height<={height}][ext=mp4]/b[height<={height}]/best'),
         'merge_output_format': 'mp4',
         'max_filesize': 1900 * 1024 * 1024,
         'noplaylist': True,
@@ -1560,32 +1572,116 @@ def probe_audio(path):
         return ""
 
 
+VIDEO_ERRORS = {
+    "LIVE": "Live stream download hoy na.",
+    "TOO_BIG": "Video 1.9GB besi — Telegram-e jabe na.",
+    "LOGIN": "Login wall (private/cookie lage). cookies.txt dao.",
+    "NONE": "Video paini. Link check koro.",
+}
+
+
+def fetch_video_info(url):
+    """yt-dlp info only (no download). Returns (info, error_code)."""
+    import yt_dlp
+    opts = {
+        'quiet': True, 'no_warnings': True, 'noplaylist': True,
+        'retries': 3,
+    }
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        err = str(e).lower()
+        if 'sign in' in err or 'login' in err or 'cookies' in err or 'private' in err:
+            return None, "LOGIN"
+        return None, "NONE"
+    if not info:
+        return None, "NONE"
+    if info.get('is_live'):
+        return None, "LIVE"
+    dur = info.get('duration') or 0
+    if dur and dur > VIDEO_MAX_MINUTES * 60:
+        return None, "TOO_LONG"
+    return info, ""
+
+
+def available_heights(info, cap=1080):
+    """Info theke mp4 heights (cap porjonto), boro age. Max 5 ta."""
+    seen = set()
+    for f in info.get('formats') or []:
+        h = f.get('height')
+        if not h or h > cap:
+            continue
+        if f.get('vcodec') in (None, 'none'):
+            continue
+        if (f.get('ext') or '') != 'mp4' and f.get('protocol', '') not in ('https', 'http'):
+            continue
+        seen.add(int(h))
+    return sorted(seen, reverse=True)[:5]
+
+
 async def send_video(message, url: str):
-    """YouTube/FB/IG/TikTok link -> mp4 -> document."""
+    """Social video: YT regular hole quality button, Shorts+onnanno auto-highest."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Fetching video info...")
+    try:
+        info, err = await asyncio.to_thread(fetch_video_info, url)
+    except Exception as e:
+        await status.edit_text(f"Error: {str(e)[:200]}")
+        return
+    if err:
+        if err == "TOO_LONG":
+            await status.edit_text(f"Video {VIDEO_MAX_MINUTES} min-er besi — refuse.")
+        else:
+            await status.edit_text(VIDEO_ERRORS.get(err, "Video paini."))
+        return
+
+    if is_youtube_video(url):
+        heights = await asyncio.to_thread(available_heights, info)
+        if len(heights) > 1:
+            key = uuid.uuid4().hex[:8]
+            sender = message.from_user.id if message.from_user else message.chat.id
+            PENDING_Q[key] = {"url": url, "user_id": sender,
+                              "title": info.get('title') or 'video'}
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"{h}p", callback_data=f"q:{key}:{h}")
+                for h in heights
+            ]])
+            await status.edit_text(
+                f"{(info.get('title') or 'Video')[:80]}\nChoose quality:",
+                reply_markup=kb,
+            )
+            return
+        # 1 tai quality thakle direct
+        h = heights[0] if heights else 1080
+        await download_and_send_video(status, message.chat, url, h, loop)
+        return
+
+    await download_and_send_video(status, message.chat, url, 1080, loop)
+
+
+async def download_and_send_video(status, chat, url: str, height: int, loop):
+    """Chosen/auto quality-te download + send + cleanup."""
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
+        await status.edit_text(f"Downloading video ({height}p)...")
         try:
             target = await asyncio.to_thread(
                 blocking_ytdlp_download, url, workdir,
                 make_byte_progress_cb(status, loop, "Downloading video...", 0),
+                height,
             )
         except ValueError as e:
             code = str(e)
-            await status.edit_text({
-                "LIVE": "Live stream download hoy na.",
-                "TOO_LONG": f"Video {VIDEO_MAX_MINUTES} min-er besi — refuse.",
-                "TOO_BIG": "Video 1.9GB besi — Telegram-e jabe na.",
-                "LOGIN": "Login wall (private/cookie lage). cookies.txt dao.",
-                "NONE": "Video paini. Link check koro.",
-            }.get(code, f"Error: {code[:200]}"))
+            await status.edit_text(VIDEO_ERRORS.get(code, f"Error: {code[:200]}"))
             return
         size_mb = os.path.getsize(target) / 1048576
         name = os.path.basename(target)
         audio_note = await asyncio.to_thread(probe_audio, target)
         await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
-        k = await send_one_file(message.chat, target, name)
+        k = await send_one_file(chat, target, name)
         print(f"Video send kind: {k} ({name})", flush=True)
         await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
     except Exception as e:
@@ -1595,6 +1691,26 @@ async def send_video(message, url: str):
             pass
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    try:
+        _, key, h = q.data.split(":", 2)
+        height = int(h)
+    except ValueError:
+        return
+    item = PENDING_Q.pop(key, None)
+    if not item:
+        await q.edit_message_text("Expired — link ta abar pathao.")
+        return
+    if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
+        await q.edit_message_text("Unauthorized.")
+        return
+    status = await q.edit_message_text("Starting download...")
+    await download_and_send_video(status, q.message.chat, item["url"], height,
+                                  asyncio.get_running_loop())
 
 
 def direct_filename(url, resp):
@@ -1768,6 +1884,7 @@ def main():
     if API_BASE_FILE_URL:
         builder = builder.base_file_url(API_BASE_FILE_URL)
     app = builder.build()
+    app.add_handler(CallbackQueryHandler(on_quality_choice, pattern=r"^q:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, url_listener))
     print(f"Bot running... (MAX_ZIP_MB={MAX_ZIP_MB})")
     app.run_polling()
