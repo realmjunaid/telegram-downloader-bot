@@ -886,7 +886,7 @@ import zipfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
@@ -1928,6 +1928,22 @@ async def send_direct(message, urls):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+BOT_COMMANDS = [
+    BotCommand("start", "Start the bot"),
+    BotCommand("status", "Bot status"),
+    BotCommand("ping", "Check latency"),
+    BotCommand("help", "How to use"),
+]
+
+
+async def post_init(app):
+    """Start-er somoy command menu Telegram-e register kore."""
+    try:
+        await app.bot.set_my_commands(BOT_COMMANDS)
+    except Exception as e:
+        print(f"set_my_commands fail: {e}")
+
+
 def clean_stale_workdirs():
     """Ag-er crash-e volume-e kono tgdl_* pore thakle start-ei delete."""
     try:
@@ -1946,6 +1962,7 @@ def main():
     builder = ApplicationBuilder().token(BOT_TOKEN)
     # 2GB porjonto file-e maximum timeout — slow VPS upload-eo "Timed out" hobe na.
     builder = builder.connect_timeout(120).read_timeout(3600).write_timeout(7200).pool_timeout(120)
+    builder = builder.post_init(post_init)
     if API_BASE_URL:
         builder = builder.base_url(API_BASE_URL)
     if API_BASE_FILE_URL:
