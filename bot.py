@@ -1909,13 +1909,21 @@ def fb_album_fbids(sess, pageid, postid):
 
 def fb_photo_best(sess, fbid):
     """m.photo.php theke sobcheye boro scontent image URL (HEAD diye).
-    UI icon/profile-pic auto-bad jay."""
-    try:
-        r = sess.get(f'https://m.facebook.com/photo.php?fbid={fbid}', timeout=40)
-    except Exception:
+    UI icon/profile-pic auto-bad jay. Throttle hole retry."""
+    for attempt in range(3):
+        try:
+            r = sess.get(f'https://m.facebook.com/photo.php?fbid={fbid}', timeout=40)
+        except Exception:
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status_code != 200:
+            time.sleep(2 * (attempt + 1))
+            continue
+        break
+    else:
+        print(f" FB photo page fail: {fbid}", flush=True)
         return None
-    if r.status_code != 200:
-        return None
+    time.sleep(1)  # rapid hit-e throttle khay
     cands = []
     for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', r.text):
         u = u.replace('\\/', '/').replace('&amp;', '&')
@@ -2031,11 +2039,15 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     pairs = []
     pageid, postid = fb_story_ids(r.url)
     if pageid and postid:
-        for fbid in fb_album_fbids(sess, pageid, postid):
+        fbids = fb_album_fbids(sess, pageid, postid)
+        print(f" FB album: {len(fbids)} photos (post {postid})", flush=True)
+        for fbid in fbids:
             best = fb_photo_best(sess, fbid)
             if best:
                 big = fb_big_variant(best)
                 pairs.append((big, best) if big != best else (best, None))
+            else:
+                print(f" FB photo skip (no image): {fbid}", flush=True)
     if not pairs:
         # fallback: cover (og:image) only — puro page scrape NA (onno post dhukto)
         m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
