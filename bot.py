@@ -694,6 +694,18 @@ TERA_DOMAINS = (
 TERA_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
+VIDEO_DOMAINS = (
+    'youtube.com', 'youtu.be', 'facebook.com', 'fb.watch', 'fb.com',
+    'instagram.com', 'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com',
+)
+# 60 min-er besi video refuse (2GB cross + ghonta lege jay)
+VIDEO_MAX_MINUTES = 60
+
+
+def is_video_url(url):
+    low = url.lower()
+    return any(d in low for d in VIDEO_DOMAINS)
+
 
 def is_terabox_url(url):
     return any(d in url for d in TERA_DOMAINS)
@@ -1068,6 +1080,9 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if is_terabox_url(url):
         await send_terabox(update.message, url)
+        return
+    if is_video_url(url):
+        await send_video(update.message, url)
         return
     if "e-hentai.org" in url or "exhentai.org" in url or "pawchive.pw" in url:
         await send_as_zip(update.message, url)
@@ -1456,6 +1471,102 @@ async def send_terabox(message, url: str):
         if msg is None and str(e).startswith('ERRNO_'):
             msg = "Terabox login/verification chacche. Pore try koro."
         await status.edit_text(msg or f"Error: {str(e)[:200]}")
+    except Exception as e:
+        try:
+            await status.edit_text(f"Error: {str(e)[:300]}")
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def blocking_ytdlp_download(url, workdir, byte_cb=None):
+    """yt-dlp diye video namay (mp4 <=1080p, 1900MB cap). Returns file path.
+    Raises ValueError(LIVE/TOO_LONG/TOO_BIG/LOGIN/NONE)."""
+    import yt_dlp
+
+    def hook(d):
+        if d.get('status') == 'downloading' and byte_cb is not None:
+            try:
+                byte_cb(d.get('downloaded_bytes') or 0,
+                        d.get('total_bytes') or d.get('total_bytes_estimate') or 0)
+            except Exception:
+                pass
+
+    opts = {
+        'format': 'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best',
+        'merge_output_format': 'mp4',
+        'max_filesize': 1900 * 1024 * 1024,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'retries': 3,
+        'concurrent_fragment_downloads': 4,
+        'outtmpl': os.path.join(workdir, '%(title).80s [%(id)s].%(ext)s'),
+        'progress_hooks': [hook],
+    }
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            err = str(e).lower()
+            if 'sign in' in err or 'login' in err or 'cookies' in err or 'private' in err:
+                raise ValueError("LOGIN")
+            raise
+        if not info:
+            raise ValueError("NONE")
+        if info.get('is_live'):
+            raise ValueError("LIVE")
+        dur = info.get('duration') or 0
+        if dur and dur > VIDEO_MAX_MINUTES * 60:
+            raise ValueError("TOO_LONG")
+        try:
+            ydl.download([url])
+        except Exception as e:
+            err = str(e).lower()
+            if 'larger than' in err or 'max-filesize' in err or 'file size' in err:
+                raise ValueError("TOO_BIG")
+            if 'sign in' in err or 'login' in err or 'cookies' in err or 'private' in err:
+                raise ValueError("LOGIN")
+            raise
+
+    cands = [os.path.join(workdir, f) for f in os.listdir(workdir)]
+    cands = [p for p in cands if os.path.isfile(p)]
+    if not cands:
+        raise ValueError("NONE")
+    return max(cands, key=os.path.getsize)
+
+
+async def send_video(message, url: str):
+    """YouTube/FB/IG/TikTok link -> mp4 -> document."""
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Fetching video info...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        try:
+            target = await asyncio.to_thread(
+                blocking_ytdlp_download, url, workdir,
+                make_byte_progress_cb(status, loop, "Downloading video...", 0),
+            )
+        except ValueError as e:
+            code = str(e)
+            await status.edit_text({
+                "LIVE": "Live stream download hoy na.",
+                "TOO_LONG": f"Video {VIDEO_MAX_MINUTES} min-er besi — refuse.",
+                "TOO_BIG": "Video 1.9GB besi — Telegram-e jabe na.",
+                "LOGIN": "Login wall (private/cookie lage). cookies.txt dao.",
+                "NONE": "Video paini. Link check koro.",
+            }.get(code, f"Error: {code[:200]}"))
+            return
+        size_mb = os.path.getsize(target) / 1048576
+        name = os.path.basename(target)
+        await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
+        k = await send_one_file(message.chat, target, name)
+        print(f"Video send kind: {k} ({name})", flush=True)
+        await status.edit_text(f"Done! {name} ({size_mb:.1f}MB).")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")

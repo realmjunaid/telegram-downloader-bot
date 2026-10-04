@@ -5,6 +5,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# yt-dlp 1080p+ merge-er jonno ffmpeg lage
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # mega.py purono tenacity (<6) chay jeta Python 3.12-e broken —

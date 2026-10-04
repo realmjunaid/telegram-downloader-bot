@@ -182,6 +182,19 @@ https://example.com/book.pdf
 * Webpage link hole refuse korbe (`Direct file paini`)
 * 2GB+ file skip, JS/Captcha wall host-e hobe na
 
+## 6e. Video link (YouTube / Facebook / Instagram / TikTok)
+
+```
+https://youtu.be/xxxx
+https://vt.tiktok.com/xxxx
+https://fb.watch/xxxx
+https://instagram.com/reel/xxxx
+```
+
+* yt-dlp diye **mp4 (max 1080p)** namiye document hisebe pathabe
+* 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
+* Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
+
 ## 6c. Terabox share link
 
 ```
