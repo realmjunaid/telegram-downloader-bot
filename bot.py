@@ -700,9 +700,10 @@ TERA_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
 VIDEO_DOMAINS = (
-    'youtube.com', 'youtu.be', 'facebook.com', 'fb.watch', 'fb.com',
+    'youtube.com', 'youtu.be',
     'instagram.com', 'tiktok.com', 'vt.tiktok.com', 'vm.tiktok.com',
 )
+FB_DOMAINS = ('facebook.com', 'fb.watch', 'fb.com')
 # 60 min-er besi video refuse (2GB cross + ghonta lege jay)
 VIDEO_MAX_MINUTES = 60
 
@@ -1180,6 +1181,9 @@ async def route_url(update: Update):
         return
     if is_terabox_url(url):
         await send_terabox(update.message, url)
+        return
+    if is_fb_url(url):
+        await send_facebook(update.message, url)
         return
     if is_video_url(url):
         await send_video(update.message, url)
@@ -1839,6 +1843,188 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                       asyncio.get_running_loop())
     finally:
         ACTIVE_JOBS -= 1
+
+
+def is_video_url(url):
+    low = url.lower()
+    return any(d in low for d in VIDEO_DOMAINS)
+
+
+def is_fb_url(url):
+    low = url.lower()
+    return any(d in low for d in FB_DOMAINS)
+
+
+def fb_candidate_images(page):
+    """og:image first, tarpor sob scontent photo URL (query chara dedupe)."""
+    out = []
+    m = re.search(r'property="og:image"[^>]*content="([^"]+)', page)
+    if m:
+        out.append(m.group(1).replace('&amp;', '&'))
+    for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', page):
+        out.append(u.replace('\\/', '/').replace('&amp;', '&'))
+    seen, uniq = set(), []
+    for u in out:
+        key = u.split('?')[0]
+        if key not in seen:
+            seen.add(key)
+            uniq.append(u)
+    return uniq[:40]
+
+
+def fb_candidate_videos(page):
+    """playable_url (hd age) list."""
+    vids = []
+    for pat in (r'"playable_url_quality_hd"\s*:\s*"([^"]+)"',
+                r'"playable_url"\s*:\s*"([^"]+)"',
+                r'"browser_native_hd_url"\s*:\s*"([^"]+)"'):
+        for v in re.findall(pat, page):
+            vids.append(v.replace('\\/', '/').replace('&amp;', '&'))
+    seen, uniq = set(), []
+    for v in vids:
+        if v not in seen:
+            seen.add(v)
+            uniq.append(v)
+    return uniq[:5]
+
+
+def blocking_facebook_download(url, workdir, byte_cb=None):
+    """FB share/post link -> video thakle video, naile photo set. Returns target_dir.
+    Raises ValueError(PAGE_FAIL/LOGIN/NO_PHOTO)."""
+    sess = get_scraper()
+    try:
+        r = sess.get(url, timeout=40)
+    except Exception:
+        raise ValueError("PAGE_FAIL")
+    if r.status_code != 200 or len(r.text) < 5000:
+        raise ValueError("PAGE_FAIL")
+    page = r.text
+    low = page.lower()
+    if ('login' in low and 'password' in low and 'scontent' not in low
+            and 'playable_url' not in low):
+        raise ValueError("LOGIN")
+
+    target_dir = os.path.join(workdir, "facebook")
+    os.makedirs(target_dir, exist_ok=True)
+    dl_headers = {'Referer': 'https://www.facebook.com/', 'Accept': '*/*'}
+    done_all, total_known = [0], [0]
+
+    def fetch(u, prefix, i):
+        try:
+            d = sess.get(u, headers=dl_headers, timeout=60, stream=True)
+            if d.status_code != 200:
+                return None
+            ctype = d.headers.get('Content-Type', '').lower().split(';')[0].strip()
+            if 'text/html' in ctype:
+                return None
+            ext = '.mp4' if prefix == 'video' else '.jpg'
+            if 'png' in ctype:
+                ext = '.png'
+            elif 'webp' in ctype:
+                ext = '.webp'
+            elif 'mp4' in ctype or 'video' in ctype:
+                ext = '.mp4'
+            out = os.path.join(target_dir, f"{i:03d}{ext}")
+            wrote = 0
+            with open(out, 'wb') as f:
+                for chunk in d.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    if wrote + len(chunk) > 1900 * 1024 * 1024:
+                        break
+                    f.write(chunk)
+                    wrote += len(chunk)
+                    done_all[0] += len(chunk)
+                    if byte_cb is not None:
+                        try:
+                            byte_cb(done_all[0], total_known[0])
+                        except Exception:
+                            pass
+            if wrote < 20000:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+                return None
+            return out
+        except Exception:
+            return None
+
+    # 1. video thakle video only (best first)
+    for i, vu in enumerate(fb_candidate_videos(page), start=1):
+        if fetch(vu, 'video', i):
+            return target_dir
+
+    # 2. photo set: hash dedupe (UI icon duplicate bad)
+    import hashlib
+    seen_hash = set()
+    n = 0
+    for u in fb_candidate_images(page):
+        n += 1
+        out = fetch(u, 'img', n)
+        if not out:
+            continue
+        try:
+            with open(out, 'rb') as f:
+                h = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            continue
+        if h in seen_hash:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+            continue
+        seen_hash.add(h)
+
+    files = [p for p in Path(target_dir).rglob("*") if p.is_file()]
+    if not files:
+        raise ValueError("NO_PHOTO")
+    return target_dir
+
+
+async def send_facebook(message, url: str):
+    """FB link: video ba photo set -> document/zip."""
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Fetching Facebook post...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        try:
+            target = await asyncio.to_thread(
+                blocking_facebook_download, url, workdir,
+                make_byte_progress_cb(status, loop, "Downloading...", 0),
+            )
+        except ValueError as e:
+            code = str(e)
+            await status.edit_text({
+                "PAGE_FAIL": "Facebook page khule nai. Link check koro.",
+                "LOGIN": "Facebook login wall. Public post-er link dao.",
+                "NO_PHOTO": "Ei post-e photo/video paini.",
+            }.get(code, f"Error: {code[:200]}"))
+            return
+        files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
+        if len(files) == 1:
+            fp = files[0]
+            size_mb = os.path.getsize(fp) / 1048576
+            await status.edit_text(f"Uploading {fp.name} ({size_mb:.1f}MB)...")
+            k = await send_one_file(message.chat, fp, fp.name)
+            print(f"FB send kind: {k} ({fp.name})", flush=True)
+            await status.edit_text(f"Done! {fp.name} ({size_mb:.1f}MB).")
+            return
+        total = 0
+        for p in files:
+            try:
+                total += os.path.getsize(p)
+            except OSError:
+                pass
+        await zip_and_send(status, message.chat, target, total)
+    except Exception as e:
+        try:
+            await status.edit_text(f"Error: {str(e)[:300]}")
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def direct_filename(url, resp):

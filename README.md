@@ -196,6 +196,7 @@ https://instagram.com/reel/xxxx
 * **Shorts + FB/IG/TikTok** auto-highest (button nai)
 * **FB/IG photo post + carousel** — image gulo original-e nambe (1 ta hole document, onekgula hole zip)
 * 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
+* **FB photo post** — custom scraper (yt-dlp FB parse fail kore): video thakle video, naile photo set (hash-dedupe). 1 ta hole document, onekgula hole zip
 * Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
 
 ## 6c. Terabox share link
