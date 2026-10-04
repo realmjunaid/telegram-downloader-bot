@@ -1494,7 +1494,7 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None):
                 pass
 
     opts = {
-        'format': 'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best',
+        'format': 'bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]/best',
         'merge_output_format': 'mp4',
         'max_filesize': 1900 * 1024 * 1024,
         'noplaylist': True,
@@ -1540,6 +1540,26 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None):
     return max(cands, key=os.path.getsize)
 
 
+def probe_audio(path):
+    """ffprobe diye audio stream ache kina. '' / ' (no audio in source)' / ' (with audio)'."""
+    import shutil
+    import subprocess
+    if not shutil.which('ffprobe'):
+        return ""
+    try:
+        r = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type',
+             '-of', 'csv=p=0', path],
+            capture_output=True, text=True, timeout=30,
+        )
+        types = r.stdout.lower()
+        if 'audio' in types:
+            return " (with audio)"
+        return " (no audio in source)"
+    except Exception:
+        return ""
+
+
 async def send_video(message, url: str):
     """YouTube/FB/IG/TikTok link -> mp4 -> document."""
     loop = asyncio.get_running_loop()
@@ -1563,10 +1583,11 @@ async def send_video(message, url: str):
             return
         size_mb = os.path.getsize(target) / 1048576
         name = os.path.basename(target)
+        audio_note = await asyncio.to_thread(probe_audio, target)
         await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
         k = await send_one_file(message.chat, target, name)
         print(f"Video send kind: {k} ({name})", flush=True)
-        await status.edit_text(f"Done! {name} ({size_mb:.1f}MB).")
+        await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
