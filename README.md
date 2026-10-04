@@ -194,9 +194,9 @@ https://instagram.com/reel/xxxx
 * yt-dlp diye **mp4 (max 1080p)** namiye document hisebe pathabe
 * **YouTube video** hole quality button asbe (1080p/720p/480p...) — choose korle oi quality-te download
 * **Shorts + FB/IG/TikTok** auto-highest (button nai)
-* **FB/IG photo post + carousel** — image gulo original-e nambe (1 ta hole document, onekgula hole zip)
+* **FB/IG photo post + carousel** — image gulo original-e **direct document** (zip na)
 * 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
-* **FB photo post** — custom scraper (yt-dlp FB parse fail kore): video thakle video, naile photo set (hash-dedupe). 1 ta hole document, onekgula hole zip
+* **FB photo post** — custom scraper (yt-dlp FB parse fail kore): video thakle video document, photo set s2048 full-size-e sob direct document (hash-dedupe, zip na)
 * Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
 
 ## 6c. Terabox share link

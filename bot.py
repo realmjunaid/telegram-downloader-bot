@@ -2007,7 +2007,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
 
 
 async def send_facebook(message, url: str):
-    """FB link: video ba photo set -> document/zip."""
+    """FB link: video/photo sob direct document (zip na)."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Fetching Facebook post...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -2026,21 +2026,27 @@ async def send_facebook(message, url: str):
             }.get(code, f"Error: {code[:200]}"))
             return
         files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
-        if len(files) == 1:
-            fp = files[0]
-            size_mb = os.path.getsize(fp) / 1048576
-            await status.edit_text(f"Uploading {fp.name} ({size_mb:.1f}MB)...")
-            k = await send_one_file(message.chat, fp, fp.name)
-            print(f"FB send kind: {k} ({fp.name})", flush=True)
-            await status.edit_text(f"Done! {fp.name} ({size_mb:.1f}MB).")
+        if not files:
+            await status.edit_text("Kono file paini.")
             return
-        total = 0
-        for p in files:
+        await status.edit_text(f"{len(files)} ta file pathacchi (original)...")
+        chat = message.chat
+        kinds, sent = [], 0
+        for i, fp in enumerate(files, start=1):
             try:
-                total += os.path.getsize(p)
-            except OSError:
-                pass
-        await zip_and_send(status, message.chat, target, total)
+                kinds.append(await send_one_file(chat, fp, fp.name))
+                sent += 1
+            except Exception as e:
+                kinds.append('failed')
+                print(f"FB send fail {fp.name}: {str(e)[:120]}", flush=True)
+            if i % 20 == 0:
+                try:
+                    await status.edit_text(f"{i}/{len(files)} sent...")
+                except Exception:
+                    pass
+        summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} failed:{kinds.count('failed')}"
+        print(f"FB send kinds: {summary}", flush=True)
+        await status.edit_text(f"Done! {sent}/{len(files)} files sent ({summary}).")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
