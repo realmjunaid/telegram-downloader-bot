@@ -1908,22 +1908,23 @@ def fb_album_fbids(sess, pageid, postid):
 
 
 def fb_photo_best(sess, fbid):
-    """m.photo.php theke sobcheye boro scontent image URL (HEAD diye).
+    """m.photo.php theke sobcheye boro scontent image URL.
+    cstp mx-area diye pick (HEAD request lage na — throttle kom).
     UI icon/profile-pic auto-bad jay. Throttle hole retry."""
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             r = sess.get(f'https://m.facebook.com/photo.php?fbid={fbid}', timeout=40)
         except Exception:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(3 * (attempt + 1))
             continue
         if r.status_code != 200:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(3 * (attempt + 1))
             continue
         break
     else:
         print(f" FB photo page fail: {fbid}", flush=True)
         return None
-    time.sleep(1)  # rapid hit-e throttle khay
+    time.sleep(3)  # rapid hit-e throttle khay
     cands = []
     for u in re.findall(r'https://scontent[^"\\\s]+?\.(?:jpg|png|webp)[^"\\\s]*', r.text):
         u = u.replace('\\/', '/').replace('&amp;', '&')
@@ -1934,20 +1935,21 @@ def fb_photo_best(sess, fbid):
     if len(cands) == 1:
         return cands[0]
 
-    def head_size(u):
-        try:
-            h = sess.head(u, headers={'Referer': 'https://m.facebook.com/'},
-                          timeout=20, allow_redirects=True)
-            if h.status_code == 200:
-                return int(h.headers.get('Content-Length') or 0)
-        except Exception:
-            pass
+    def mx_area(u):
+        m = re.search(r'cstp=mx(\d+)x(\d+)', u)
+        if m:
+            try:
+                return int(m.group(1)) * int(m.group(2))
+            except ValueError:
+                pass
         return 0
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        sizes = list(ex.map(head_size, cands))
-    best = max(range(len(cands)), key=lambda i: sizes[i])
-    return cands[best] if sizes[best] else cands[0]
+    def has_ctp(u):
+        # profile-pic URL-e ctp khali thake — photo-te size thake
+        m = re.search(r'ctp=([^&]*)', u)
+        return 1 if m and m.group(1) else 0
+
+    return max(cands, key=lambda u: (has_ctp(u), mx_area(u), len(u)))
 
 
 def fb_candidate_videos(page):
