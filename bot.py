@@ -7,6 +7,7 @@ import threading
 from urllib.parse import urljoin, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import cloudscraper
+import requests
 from bs4 import BeautifulSoup
 
 # ---- Speed settings ----
@@ -46,16 +47,6 @@ def get_scraper():
             browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
         )
     return _thread_local.scraper
-
-
-# Cloudflare Bypass & Browser Spoofing (main thread-er jonno)
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
 
 # Custom HTTP Headers
 headers = {
@@ -171,8 +162,10 @@ def already_downloaded(target_dir, i):
         p = os.path.join(target_dir, f"{prefix_num}.{e}")
         if os.path.exists(p) and os.path.getsize(p) > 10240:
             return True
-    # notun format: 001 - original.webp
+    # notun format: 001 - original.webp (.tmp bad — crash leftover)
     for p in glob.glob(os.path.join(target_dir, f"{prefix_num} - .*")):
+        if p.endswith(".tmp"):
+            continue
         try:
             if os.path.getsize(p) > 10240:
                 return True
@@ -452,7 +445,7 @@ def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=No
             with open(tmpfile, 'wb') as f:
                 f.write(img_data)
             os.replace(tmpfile, filename)
-            label = ' video' if ext in ('mp4', 'webm', 'm4v', 'mov') else (' animated' if ext in ('webp', 'gif') else ' image')
+            label = 'video' if ext in ('mp4', 'webm', 'm4v', 'mov') else ('animated' if ext in ('webp', 'gif') else 'image')
             return f"[{i}/{total_images}]  {label} {os.path.basename(filename)} ({len(img_data)//1024} KB)"
         except Exception as e:
             return f"[{i}/{total_images}]  {str(e)[:100]}"
@@ -549,6 +542,10 @@ def scan_pawchive_post(post_url):
         'count': len(items),
         'est_bytes': total if has_size else None,
         'has_full': post.get('has_full'),
+        'items': items,
+        'service': service,
+        'user': user,
+        'post_id': post_id,
     }
 
 
@@ -559,48 +556,56 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=No
     asol filename (1M.png, ...) + hash path pay.
     has_full=True hole /data/ (original), na hole /thumbnail/data/ (preview)
     theke namay — site-ei full file na thakle original deya somvob na.
+    prescan thakle API abar call hoy na (scan-er data reuse).
     """
-    service, user, post_id = parse_pawchive_url(post_url)
-    if not post_id:
-        print(" Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
-        return None
+    if prescan and prescan.get('items'):
+        service, user, post_id = prescan.get('service'), prescan.get('user'), prescan.get('post_id')
+        folder, items = prescan['folder'], prescan['items']
+        has_full = prescan.get('has_full')
+        target_dir = os.path.join(save_path, folder)
+        os.makedirs(target_dir, exist_ok=True)
+    else:
+        service, user, post_id = parse_pawchive_url(post_url)
+        if not post_id:
+            print(" Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
+            return None
 
-    api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
-    print(f" Pawchive API: {api_url}")
-    res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES,
-                   extra_headers={'Accept': 'application/json'})
-    if res is None:
-        print(" API theke post info pelam na.")
-        return None
-    try:
-        post = res.json()
-    except Exception:
-        print(" API response JSON na.")
-        return None
+        api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
+        print(f" Pawchive API: {api_url}")
+        res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES,
+                       extra_headers={'Accept': 'application/json'})
+        if res is None:
+            print(" API theke post info pelam na.")
+            return None
+        try:
+            post = res.json()
+        except Exception:
+            print(" API response JSON na.")
+            return None
 
-    title = (post.get('title') or f"pawchive_{post_id}").strip()
-    author = post.get('author') or post.get('user') or user
-    # author API-te object hote pare
-    if isinstance(author, dict):
-        author = author.get('name') or user
-    folder = sanitize_folder_name(f"{author} - {title} [{service} {post_id}] (Patreon)" if service == 'patreon' else f"{author} - {title} [{service} {post_id}]")
-    target_dir = os.path.join(save_path, folder)
-    os.makedirs(target_dir, exist_ok=True)
+        title = (post.get('title') or f"pawchive_{post_id}").strip()
+        author = post.get('author') or post.get('user') or user
+        # author API-te object hote pare
+        if isinstance(author, dict):
+            author = author.get('name') or user
+        folder = sanitize_folder_name(f"{author} - {title} [{service} {post_id}] (Patreon)" if service == 'patreon' else f"{author} - {title} [{service} {post_id}]")
+        target_dir = os.path.join(save_path, folder)
+        os.makedirs(target_dir, exist_ok=True)
 
-    # file + attachments, path diye dedupe
-    items, seen = [], set()
-    main = post.get('file') or {}
-    for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
-        name, path = (a.get('name') or '').strip(), a.get('path') or ''
-        if path and path not in seen and name:
-            seen.add(path)
-            items.append((name, path))
+        # file + attachments, path diye dedupe
+        items, seen = [], set()
+        main = post.get('file') or {}
+        for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
+            name, path = (a.get('name') or '').strip(), a.get('path') or ''
+            if path and path not in seen and name:
+                seen.add(path)
+                items.append((name, path))
 
-    if not items:
-        print(" Ei post-e kono file/attachment nai.")
-        return None
+        if not items:
+            print(" Ei post-e kono file/attachment nai.")
+            return None
 
-    has_full = post.get('has_full')
+        has_full = post.get('has_full')
     base = 'https://img.pawchive.pw/data' if has_full else 'https://img.pawchive.pw/thumbnail/data'
     if has_full:
         print(f" Full-res archived ({len(items)} files).")
@@ -747,7 +752,6 @@ def extract_terabox_auth(page):
 def blocking_terabox_download(url, workdir, byte_cb=None):
     """Terabox share link -> sob file namay. Returns target_dir.
     Raises ValueError(VERIFY/LOGIN/EXPIRED/EMPTY) clean message-er jonno."""
-    import requests
     surl = parse_terabox_surl(url)
     if not surl:
         raise ValueError("BAD_LINK")
@@ -789,14 +793,22 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
     # 2. file list (dir recursive, depth 3)
     all_files, total_size, queue, seen = [], [0], [('', 0)], set()
 
-    def list_dir(path, depth):
-        params = dict(base_params, page='1', num='1000', order='time', desc='1', dir=path)
-        r = sess.get('https://www.terabox.com/share/list', params=params,
-                     headers={'Referer': share_page_url}, timeout=30)
-        data = r.json()
-        if data.get('errno') not in (0, None):
-            raise ValueError(f"ERRNO_{data.get('errno')}")
-        return data.get('list') or []
+    def list_dir(path):
+        """Sob page ghure file list. Terabox page-e max ~100 dey."""
+        out, page = [], 1
+        while True:
+            params = dict(base_params, page=str(page), num='100', order='time', desc='1', dir=path)
+            r = sess.get('https://www.terabox.com/share/list', params=params,
+                         headers={'Referer': share_page_url}, timeout=30)
+            data = r.json()
+            if data.get('errno') not in (0, None):
+                raise ValueError(f"ERRNO_{data.get('errno')}")
+            batch = data.get('list') or []
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return out
 
     while queue:
         dpath, depth = queue.pop(0)
@@ -804,7 +816,7 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
             continue
         seen.add(dpath)
         try:
-            items = list_dir(dpath, depth)
+            items = list_dir(dpath)
         except ValueError:
             raise
         except Exception:
@@ -813,7 +825,6 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
             if it.get('isdir'):
                 queue.append((it.get('path', ''), depth + 1))
             else:
-                it['_dir'] = dpath
                 all_files.append(it)
                 try:
                     total_size[0] += int(it.get('size') or 0)
@@ -917,8 +928,11 @@ URL_RE = re.compile(r'https?://[^\s]+')
 START_TIME = time.time()
 ACTIVE_JOBS = 0
 
-# YT quality choice: key -> {"url": ..., "user_id": ...}
+# YT quality choice: key -> {"url": ..., "user_id": ..., "ts": ...}
 PENDING_Q = {}
+# yt-dlp info cache: url -> (ts, info). Video+quality 2 bar info chay — 10 min reuse.
+INFO_CACHE = {}
+INFO_TTL = 600
 
 
 def is_youtube_video(url):
@@ -960,9 +974,20 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
 
     open_new_part()
     total = len(files)
+    skipped_big = 0
     for n, f in enumerate(files, start=1):
         fsize = f.stat().st_size
-        # single file-i limit er besi holeo alada zip-e dhukao (Telegram emniteo katbe)
+        if fsize > max_bytes:
+            # single file-i limit-er besi — Telegram-e jabe na, skip
+            print(f" Skip oversize ({fsize//1048576}MB): {f.name}", flush=True)
+            skipped_big += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(n, total)
+                except Exception:
+                    pass
+            continue
+        # ager part full hole notun part khulo
         if cur_size > 0 and cur_size + fsize > max_bytes:
             zips.append(cur_zip_path)
             open_new_part()
@@ -1134,6 +1159,8 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if not update.message or not update.message.text:
         return
+    if not URL_RE.search(update.message.text):
+        return
     global ACTIVE_JOBS
     ACTIVE_JOBS += 1
     try:
@@ -1221,7 +1248,8 @@ async def send_as_zip(message, url: str):
 async def zip_and_send(status, chat, target_dir: str, total: int):
     """Downloaded folder -> zip (+progress) -> upload. Gallery + Terabox 2 jon-e use kore."""
     loop = asyncio.get_running_loop()
-    n_files = sum(1 for _ in Path(target_dir).rglob("*") if _.is_file())
+    n_files = sum(1 for _ in Path(target_dir).rglob("*")
+                  if _.is_file() and not _.name.endswith(".tmp"))
     if n_files == 0:
         await status.edit_text("Kono file paini.")
         return
@@ -1258,8 +1286,6 @@ async def zip_and_send(status, chat, target_dir: str, total: int):
 
 def mega_folder_api(node, payload):
     """Mega share-context (n=node) API call. int return = errno."""
-    import random
-    import requests
     seq = random.randint(100000, 999999)
     ep = f'https://g.api.mega.co.nz/cs?id={seq}&n={node}'
     r = requests.post(ep, json=payload, timeout=30)
@@ -1276,7 +1302,6 @@ def mega_fold_key(k8):
 
 def blocking_mega_folder_download(url, workdir, byte_cb=None):
     """Mega folder link -> sob file namay (decrypt soho). Returns target_dir."""
-    import requests
     from Crypto.Cipher import AES
     from Crypto.Util import Counter
     from mega.crypto import (
@@ -1583,13 +1608,17 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
         opts['cookiefile'] = 'cookies.txt'
 
     with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-        except Exception as e:
-            err = str(e).lower()
-            if 'sign in' in err or 'login' in err or 'cookies' in err or 'private' in err:
-                raise ValueError("LOGIN")
-            raise
+        hit = INFO_CACHE.get(url)
+        if hit and time.time() - hit[0] < INFO_TTL:
+            info = hit[1]
+        else:
+            try:
+                info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                err = str(e).lower()
+                if 'sign in' in err or 'login' in err or 'cookies' in err or 'private' in err:
+                    raise ValueError("LOGIN")
+                raise
         if not info:
             raise ValueError("NONE")
         if info.get('is_live'):
@@ -1616,7 +1645,6 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
 
 def probe_audio(path):
     """ffprobe diye audio stream ache kina. '' / ' (no audio in source)' / ' (with audio)'."""
-    import shutil
     import subprocess
     if not shutil.which('ffprobe'):
         return ""
@@ -1643,8 +1671,12 @@ VIDEO_ERRORS = {
 
 
 def fetch_video_info(url):
-    """yt-dlp info only (no download). Returns (info, error_code)."""
+    """yt-dlp info only (no download). Returns (info, error_code). 10 min cache."""
     import yt_dlp
+    now = time.time()
+    hit = INFO_CACHE.get(url)
+    if hit and now - hit[0] < INFO_TTL:
+        return hit[1], ""
     opts = {
         'quiet': True, 'no_warnings': True, 'noplaylist': True,
         'retries': 3,
@@ -1666,6 +1698,10 @@ def fetch_video_info(url):
     dur = info.get('duration') or 0
     if dur and dur > VIDEO_MAX_MINUTES * 60:
         return None, "TOO_LONG"
+    INFO_CACHE[url] = (now, info)
+    # cache boro na hoy — 50 tar besi rakhbo na
+    while len(INFO_CACHE) > 50:
+        INFO_CACHE.pop(next(iter(INFO_CACHE)))
     return info, ""
 
 
@@ -1705,8 +1741,11 @@ async def send_video(message, url: str):
         if len(heights) > 1:
             key = uuid.uuid4().hex[:8]
             sender = message.from_user.id if message.from_user else message.chat.id
-            PENDING_Q[key] = {"url": url, "user_id": sender,
+            PENDING_Q[key] = {"url": url, "user_id": sender, "ts": time.time(),
                               "title": info.get('title') or 'video'}
+            # expire purono entry (30 min+)
+            for k in [k for k, v in PENDING_Q.items() if time.time() - v.get("ts", 0) > 1800]:
+                PENDING_Q.pop(k, None)
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"{h}p", callback_data=f"q:{key}:{h}")
                 for h in heights
@@ -1763,8 +1802,13 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         height = int(h)
     except ValueError:
         return
+    if height <= 0 or height > 1080:
+        return  # forge kora callback ignore
     item = PENDING_Q.pop(key, None)
     if not item:
+        await q.edit_message_text("Expired — link ta abar pathao.")
+        return
+    if time.time() - item.get("ts", 0) > 1800:
         await q.edit_message_text("Expired — link ta abar pathao.")
         return
     if q.from_user.id != item["user_id"] and not is_allowed(q.from_user.id):
@@ -1799,14 +1843,12 @@ def direct_filename(url, resp):
 def blocking_direct_download(urls, workdir, byte_cb=None):
     """Direct file URL list namay. Webpage/oversize skip. Returns target_dir.
     Raises ValueError(NO_FILE) jodi kichui namano na jay."""
-    import requests
-    import threading
     target_dir = os.path.join(workdir, "direct")
     os.makedirs(target_dir, exist_ok=True)
     sess = requests.Session()
     sess.headers.update({'User-Agent': TERA_UA})
     done_all, lock, total_known = [0], threading.Lock(), [0]
-    saved, skipped = [], [0]
+    saved = []
 
     def fetch_one(url):
         try:
@@ -1819,8 +1861,7 @@ def blocking_direct_download(urls, workdir, byte_cb=None):
             except (TypeError, ValueError):
                 length = 0
             if length > 2000 * 1024 * 1024:
-                skipped[0] += 1
-                return
+                return  # 2GB+ single file skip (Telegram limit)
             name = direct_filename(url, r)
             if not name:
                 # first chunk dekhe html kina check
@@ -1902,6 +1943,9 @@ async def send_direct(message, urls):
         if len(files) == 1:
             fp = files[0]
             size_mb = os.path.getsize(fp) / 1048576
+            if size_mb > 2000:
+                await status.edit_text(f"File too big ({size_mb:.0f}MB) — Telegram max 2GB.")
+                return
             await status.edit_text(f"Uploading {fp.name} ({size_mb:.1f}MB)...")
             k = await send_one_file(message.chat, fp, fp.name)
             print(f"Direct send kind: {k} ({fp.name})", flush=True)
