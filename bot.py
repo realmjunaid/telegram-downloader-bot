@@ -1794,18 +1794,24 @@ async def download_and_send_video(status, chat, url: str, height: int, loop):
             print(f"Video send kind: {k} ({name})", flush=True)
             await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
             return
-        total = 0
-        for p in targets:
+        # social carousel/multiple: sob direct document (zip na)
+        kinds, sent = [], 0
+        await status.edit_text(f"{len(targets)} ta file pathacchi (original)...")
+        for i, fp in enumerate(sorted(targets), start=1):
             try:
-                total += os.path.getsize(p)
-            except OSError:
-                pass
-        album_dir = os.path.join(workdir, "album")
-        os.makedirs(album_dir, exist_ok=True)
-        for i, p in enumerate(targets, start=1):
-            ext = os.path.splitext(p)[1]
-            os.replace(p, os.path.join(album_dir, f"{i:03d}{ext}"))
-        await zip_and_send(status, chat, album_dir, total)
+                kinds.append(await send_one_file(chat, fp, os.path.basename(fp)))
+                sent += 1
+            except Exception as e:
+                kinds.append('failed')
+                print(f"Social send fail {fp}: {str(e)[:120]}", flush=True)
+            if i % 20 == 0:
+                try:
+                    await status.edit_text(f"{i}/{len(targets)} sent...")
+                except Exception:
+                    pass
+        summary = f"doc:{kinds.count('doc')} photo:{kinds.count('photo')} failed:{kinds.count('failed')}"
+        print(f"Social send kinds: {summary}", flush=True)
+        await status.edit_text(f"Done! {sent}/{len(targets)} files sent ({summary}).")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
