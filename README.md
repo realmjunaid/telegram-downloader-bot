@@ -169,6 +169,19 @@ https://mega.nz/file/AbC123#keyXYZ
 * Free IP quota sesh hole `Mega free quota sesh` dekhabe — pore try koro ba `MEGA_EMAIL`/`MEGA_PASSWORD` env dao (quota bare)
 * Folder link (`/folder/...`) supported — sob file namiye **zip** kore pathabe (live test pass, 17 file verified)
 
+## 6d. Direct file link (universal)
+
+```
+https://files.catbox.moe/abc123.mp4
+https://cdn.discordapp.com/.../pic.png
+https://example.com/book.pdf
+```
+
+* Gallery/Mega/Terabox na — **jekono direct file link** namiye dibe
+* 1 ta file hole direct document, ek message-e onek link thakle zip
+* Webpage link hole refuse korbe (`Direct file paini`)
+* 2GB+ file skip, JS/Captcha wall host-e hobe na
+
 ## 6c. Terabox share link
 
 ```

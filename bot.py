@@ -1058,19 +1058,21 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if not update.message or not update.message.text:
         return
-    m = URL_RE.search(update.message.text)
-    if not m:
+    urls = URL_RE.findall(update.message.text)
+    if not urls:
         return
-    url = m.group(0)
+    urls = list(dict.fromkeys(urls))[:20]  # dedupe, max 20
+    url = urls[0]
     if "mega.nz" in url or "mega.io" in url:
         await send_mega(update.message, url)
         return
     if is_terabox_url(url):
         await send_terabox(update.message, url)
         return
-    if "e-hentai.org" not in url and "exhentai.org" not in url and "pawchive.pw" not in url:
+    if "e-hentai.org" in url or "exhentai.org" in url or "pawchive.pw" in url:
+        await send_as_zip(update.message, url)
         return
-    await send_as_zip(update.message, url)
+    await send_direct(update.message, urls)
 
 
 def human_size(num):
@@ -1454,6 +1456,154 @@ async def send_terabox(message, url: str):
         if msg is None and str(e).startswith('ERRNO_'):
             msg = "Terabox login/verification chacche. Pore try koro."
         await status.edit_text(msg or f"Error: {str(e)[:200]}")
+    except Exception as e:
+        try:
+            await status.edit_text(f"Error: {str(e)[:300]}")
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def direct_filename(url, resp):
+    """Content-Disposition, naile URL tail theke filename."""
+    cd = resp.headers.get('Content-Disposition', '') if resp is not None else ''
+    if cd:
+        m = re.search(r"filename\*\s*=\s*UTF-8''([^;\s]+)", cd, re.I)
+        if not m:
+            m = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.I)
+        if m:
+            fn = sanitize_file_name(unquote(m.group(1).strip()))
+            if fn and fn != "image":
+                return fn
+    tail = unquote(url.rsplit('/', 1)[-1].split('?')[0].split('#')[0]).strip()
+    tail = sanitize_file_name(tail)
+    return tail if tail and tail != "image" and '.' in tail else ""
+
+
+def blocking_direct_download(urls, workdir, byte_cb=None):
+    """Direct file URL list namay. Webpage/oversize skip. Returns target_dir.
+    Raises ValueError(NO_FILE) jodi kichui namano na jay."""
+    import requests
+    import threading
+    target_dir = os.path.join(workdir, "direct")
+    os.makedirs(target_dir, exist_ok=True)
+    sess = requests.Session()
+    sess.headers.update({'User-Agent': TERA_UA})
+    done_all, lock, total_known = [0], threading.Lock(), [0]
+    saved, skipped = [], [0]
+
+    def fetch_one(url):
+        try:
+            r = sess.get(url, stream=True, timeout=30, allow_redirects=True)
+            ctype = r.headers.get('Content-Type', '').lower().split(';')[0].strip()
+            if 'text/html' in ctype or 'text/plain' in ctype and 'attachment' not in r.headers.get('Content-Disposition', '').lower():
+                return
+            try:
+                length = int(r.headers.get('Content-Length') or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length > 2000 * 1024 * 1024:
+                skipped[0] += 1
+                return
+            name = direct_filename(url, r)
+            if not name:
+                # first chunk dekhe html kina check
+                it = r.iter_content(chunk_size=8192)
+                try:
+                    first = next(it)
+                except StopIteration:
+                    return
+                if first.lstrip()[:15].lower().startswith((b'<html', b'<!doctype')):
+                    return
+                name = sanitize_file_name(f"file_{abs(hash(url)) % 100000}.bin")
+                chunks = [first]
+            else:
+                chunks = []
+            out = os.path.join(target_dir, name)
+            if os.path.exists(out):
+                stem, dot, ext = name.rpartition('.')
+                k = 1
+                while os.path.exists(out):
+                    out = os.path.join(target_dir, f"{stem}({k}){dot}{ext}" if dot else f"{name}({k})")
+                    k += 1
+            if length:
+                with lock:
+                    total_known[0] += length
+            wrote = 0
+            with open(out, 'wb') as f:
+                for c in chunks:
+                    f.write(c)
+                    wrote += len(c)
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    if wrote + len(chunk) > 2000 * 1024 * 1024:
+                        break
+                    f.write(chunk)
+                    wrote += len(chunk)
+                    with lock:
+                        done_all[0] += len(chunk)
+                        cur = done_all[0]
+                    if byte_cb is not None:
+                        try:
+                            byte_cb(cur, total_known[0])
+                        except Exception:
+                            pass
+            if wrote < 1024:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+                return
+            saved.append(out)
+        except Exception:
+            return
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(fetch_one, urls))
+
+    if not saved:
+        raise ValueError("NO_FILE")
+    return target_dir
+
+
+async def send_direct(message, urls):
+    """Jekono direct file link: 1 ta hole document, onekgula hole zip."""
+    loop = asyncio.get_running_loop()
+    status = await message.reply_text("Checking link...")
+    workdir = tempfile.mkdtemp(prefix="tgdl_")
+    try:
+        target = await asyncio.to_thread(
+            blocking_direct_download, urls, workdir,
+            make_byte_progress_cb(status, loop, "Downloading...", 0),
+        )
+        files = sorted([p for p in Path(target).rglob("*") if p.is_file()])
+        if len(files) == 1:
+            fp = files[0]
+            size_mb = os.path.getsize(fp) / 1048576
+            await status.edit_text(f"Uploading {fp.name} ({size_mb:.1f}MB)...")
+            k = await send_one_file(message.chat, fp, fp.name)
+            print(f"Direct send kind: {k} ({fp.name})", flush=True)
+            await status.edit_text(f"Done! {fp.name} ({size_mb:.1f}MB).")
+            return
+        total = 0
+        for p in files:
+            try:
+                total += os.path.getsize(p)
+            except OSError:
+                pass
+        await zip_and_send(status, message.chat, target, total)
+    except ValueError as e:
+        if str(e) == "NO_FILE":
+            await status.edit_text("Direct file paini. Webpage link hole gallery supported site-er link dao.")
+        else:
+            await status.edit_text(f"Error: {str(e)[:200]}")
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
