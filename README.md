@@ -194,6 +194,7 @@ https://instagram.com/reel/xxxx
 * yt-dlp diye **mp4 (max 1080p)** namiye document hisebe pathabe
 * **YouTube video** hole quality button asbe (1080p/720p/480p...) — choose korle oi quality-te download
 * **Shorts + FB/IG/TikTok** auto-highest (button nai)
+* **FB/IG photo post + carousel** — image gulo original-e nambe (1 ta hole document, onekgula hole zip)
 * 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
 * Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
 

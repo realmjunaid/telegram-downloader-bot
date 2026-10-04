@@ -1579,7 +1579,7 @@ async def send_terabox(message, url: str):
 
 
 def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
-    """yt-dlp diye video namay (mp4, height cap, 1900MB cap). Returns file path.
+    """yt-dlp diye video/image namay (mp4, height cap, 1900MB cap). Returns [file paths].
     Raises ValueError(LIVE/TOO_LONG/TOO_BIG/LOGIN/NONE)."""
     import yt_dlp
 
@@ -1601,7 +1601,7 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
         'no_warnings': True,
         'retries': 3,
         'concurrent_fragment_downloads': 4,
-        'outtmpl': os.path.join(workdir, '%(title).80s [%(id)s].%(ext)s'),
+        'outtmpl': os.path.join(workdir, '%(title).80s [%(id)s]-%(autonumber)02d.%(ext)s'),
         'progress_hooks': [hook],
     }
     if os.path.exists('cookies.txt'):
@@ -1637,10 +1637,10 @@ def blocking_ytdlp_download(url, workdir, byte_cb=None, height=1080):
             raise
 
     cands = [os.path.join(workdir, f) for f in os.listdir(workdir)]
-    cands = [p for p in cands if os.path.isfile(p)]
+    cands = sorted([p for p in cands if os.path.isfile(p)])
     if not cands:
         raise ValueError("NONE")
-    return max(cands, key=os.path.getsize)
+    return cands
 
 
 def probe_audio(path):
@@ -1764,12 +1764,12 @@ async def send_video(message, url: str):
 
 
 async def download_and_send_video(status, chat, url: str, height: int, loop):
-    """Chosen/auto quality-te download + send + cleanup."""
+    """Chosen/auto quality-te download + send + cleanup. 1 file=direct, onek=zip."""
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
         await status.edit_text(f"Downloading video ({height}p)...")
         try:
-            target = await asyncio.to_thread(
+            targets = await asyncio.to_thread(
                 blocking_ytdlp_download, url, workdir,
                 make_byte_progress_cb(status, loop, "Downloading video...", 0),
                 height,
@@ -1778,13 +1778,30 @@ async def download_and_send_video(status, chat, url: str, height: int, loop):
             code = str(e)
             await status.edit_text(VIDEO_ERRORS.get(code, f"Error: {code[:200]}"))
             return
-        size_mb = os.path.getsize(target) / 1048576
-        name = os.path.basename(target)
-        audio_note = await asyncio.to_thread(probe_audio, target)
-        await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
-        k = await send_one_file(chat, target, name)
-        print(f"Video send kind: {k} ({name})", flush=True)
-        await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
+        if len(targets) == 1:
+            target = targets[0]
+            size_mb = os.path.getsize(target) / 1048576
+            name = os.path.basename(target)
+            audio_note = ""
+            if name.lower().endswith(('.mp4', '.webm', '.mov', '.m4v', '.mkv')):
+                audio_note = await asyncio.to_thread(probe_audio, target)
+            await status.edit_text(f"Uploading {name} ({size_mb:.1f}MB)...")
+            k = await send_one_file(chat, target, name)
+            print(f"Video send kind: {k} ({name})", flush=True)
+            await status.edit_text(f"Done! {name} ({size_mb:.1f}MB){audio_note}.")
+            return
+        total = 0
+        for p in targets:
+            try:
+                total += os.path.getsize(p)
+            except OSError:
+                pass
+        album_dir = os.path.join(workdir, "album")
+        os.makedirs(album_dir, exist_ok=True)
+        for i, p in enumerate(targets, start=1):
+            ext = os.path.splitext(p)[1]
+            os.replace(p, os.path.join(album_dir, f"{i:03d}{ext}"))
+        await zip_and_send(status, chat, album_dir, total)
     except Exception as e:
         try:
             await status.edit_text(f"Error: {str(e)[:300]}")
