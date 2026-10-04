@@ -142,13 +142,17 @@ https://pawchive.pw/patreon/user/xxx/post/xxx
 Bot direct zip pathabe (kono button na):
 
 ```
+Scanning...
+░░░░░░░░░░ 0% (finding images)
+61 images, ~145 MB
 Downloading...
-850 files (920MB) — zip hocche...
-gallery — part 1/1 (920MB)
-...
-Done! 850 files, 1 zip.
+██████░░░░ 45% (28/61)
+Uploading 1 zip file...
+gallery — part 1/1 (145 MB)
+Done! 61 files, 1 zip.
 ```
 
+Shuru-tei gallery scan kore file count + estimated size dekhay, tarpor download shuru hoy.
 2GB-er moddhe hole single zip, besi hole part1, part2...
 
 ---

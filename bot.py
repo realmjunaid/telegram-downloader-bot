@@ -313,36 +313,55 @@ def fix_ext_by_magic(data: bytes, ext: str) -> str:
         return ext
     return real
 
-def download_eh_gallery(gallery_url, save_path=".", progress_cb=None):
-    print(f" Scanning gallery: {gallery_url}")
-    
+def parse_gallery_meta(soup):
+    """e-hentai gallery page theke file count + total size ('61 images (145.4 MB)') ber kore."""
+    text = soup.get_text(" ", strip=True)
+    count = size = None
+    m = re.search(r'(\d[\d,]*)\s*images?', text)
+    if m:
+        try:
+            count = int(m.group(1).replace(',', ''))
+        except ValueError:
+            count = None
+    m2 = re.search(r'\(?\s*([\d.]+)\s*(KB|MB|GB|TB)\s*\)?', text, re.I)
+    if m2:
+        try:
+            mult = {'kb': 1024, 'mb': 1024 ** 2, 'gb': 1024 ** 3, 'tb': 1024 ** 4}
+            size = int(float(m2.group(1)) * mult[m2.group(2).lower()])
+        except (ValueError, KeyError):
+            size = None
+    return count, size
+
+
+def scan_eh_gallery(gallery_url):
+    """Sudhu gallery page scan kore title, page_urls, count + estimated size.
+    Kono image download hoy na."""
     title = "EH_Gallery"
     page_urls = []
+    count = size = None
     current_url = gallery_url
 
-    # 1. Scan all gallery pages
     while current_url:
-        res = safe_get(current_url, timeout=30, retries=PAGE_RETRIES)
+        res = safe_get(current_url, timeout=30, retries=PAGE_RETRIES, quiet=True)
         if res is None:
-            print(f" Failed to access page after retry: {current_url}")
+            print(" Failed to access page after retry")
             break
-
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # Extract gallery title
         if title == "EH_Gallery":
             title_tag = soup.find('h1', id='gn') or soup.find('h1', id='gj')
             if title_tag and title_tag.text.strip():
                 title = sanitize_folder_name(title_tag.text)
 
-        # Find all thumbnail image links (/s/)
-        anchors = soup.find_all('a', href=re.compile(r'/s/[a-f0-9]+/\d+-\d+'))
-        for a in anchors:
-            href = a['href']
-            if href not in page_urls:
-                page_urls.append(href)
+        if count is None or size is None:
+            c, s = parse_gallery_meta(soup)
+            count = count if count is not None else c
+            size = size if size is not None else s
 
-        # Pagination check
+        for a in soup.find_all('a', href=re.compile(r'/s/[a-f0-9]+/\d+-\d+')):
+            if a['href'] not in page_urls:
+                page_urls.append(a['href'])
+
         next_page = None
         ptt_table = soup.find('table', class_='ptt')
         if ptt_table:
@@ -355,8 +374,23 @@ def download_eh_gallery(gallery_url, save_path=".", progress_cb=None):
                         next_page = next_url
 
         current_url = next_page
-        # gallery list page scan fast - boro delay dorkar nai
         time.sleep(random.uniform(0.2, 0.5))
+
+    if count is None:
+        count = len(page_urls)
+    return {'title': title, 'page_urls': page_urls, 'count': count, 'est_bytes': size}
+
+
+def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=None):
+    print(f" Scanning gallery: {gallery_url}")
+
+    if prescan and prescan.get('page_urls'):
+        title = prescan['title']
+        page_urls = prescan['page_urls']
+    else:
+        scan = scan_eh_gallery(gallery_url)
+        title = scan['title']
+        page_urls = scan['page_urls']
 
     if not page_urls:
         print(" No images found. The layout changed or Cloudflare blocked the request.")
@@ -456,7 +490,69 @@ def parse_pawchive_url(url):
     return None, None, None
 
 
-def download_pawchive_post(post_url, save_path=".", progress_cb=None):
+def scan_pawchive_post(post_url):
+    """Pawchive API theke sudhu post info (title, file count, estimated size) — download chara."""
+    service, user, post_id = parse_pawchive_url(post_url)
+    if not post_id:
+        print(" Pawchive post URL bujha jayni.")
+        return None
+
+    api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
+    print(f" Pawchive API: {api_url}")
+    res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES, quiet=True,
+                   extra_headers={'Accept': 'application/json'})
+    if res is None:
+        print(" API theke post info pelam na.")
+        return None
+    try:
+        post = res.json()
+    except Exception:
+        print(" API response JSON na.")
+        return None
+
+    title = (post.get('title') or f"pawchive_{post_id}").strip()
+    author = post.get('author') or post.get('user') or user
+    if isinstance(author, dict):
+        author = author.get('name') or user
+    folder = sanitize_folder_name(
+        f"{author} - {title} [{service} {post_id}] (Patreon)" if service == 'patreon'
+        else f"{author} - {title} [{service} {post_id}]"
+    )
+
+    items, seen = [], set()
+    main = post.get('file') or {}
+    for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
+        name, path = (a.get('name') or '').strip(), a.get('path') or ''
+        if path and path not in seen and name:
+            seen.add(path)
+            items.append((name, path))
+
+    if not items:
+        print(" Ei post-e kono file/attachment nai.")
+        return None
+
+    # API-te size na thakle estimate unknown — None pathay, bot "unknown" dekhay
+    total = 0
+    has_size = False
+    for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
+        sz = a.get('size') or a.get('filesize') or a.get('bytes')
+        try:
+            if sz:
+                total += int(sz)
+                has_size = True
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        'title': title,
+        'folder': folder,
+        'count': len(items),
+        'est_bytes': total if has_size else None,
+        'has_full': post.get('has_full'),
+    }
+
+
+def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=None):
     """Pawchive post-er sob attachment original filename soho download kore.
 
     API: /api/v1/{service}/user/{user}/post/{post} theke
@@ -576,12 +672,19 @@ def download_pawchive_post(post_url, save_path=".", progress_cb=None):
     return os.path.abspath(target_dir)
 
 
-def download_any(url, save_path=".", progress_cb=None):
+def scan_any(url):
+    """URL dekhe site chine sothik scanner-e pathay. Returns scan dict or None."""
+    if 'pawchive.pw' in url:
+        return scan_pawchive_post(url)
+    return scan_eh_gallery(url)
+
+
+def download_any(url, save_path=".", progress_cb=None, prescan=None):
     """URL dekhe site chine sothik downloader-e pathay. Returns target_dir or None."""
     if 'pawchive.pw' in url:
-        return download_pawchive_post(url, save_path=save_path, progress_cb=progress_cb)
+        return download_pawchive_post(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
     else:
-        return download_eh_gallery(url, save_path=save_path, progress_cb=progress_cb)
+        return download_eh_gallery(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
 
 # ================= BOT =================
 import asyncio
@@ -666,9 +769,9 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int):
     return zips
 
 
-def blocking_download(url: str, workdir: str, progress_cb=None):
+def blocking_download(url: str, workdir: str, progress_cb=None, prescan=None):
     """Thread-e chalano blocking download. Returns (target_dir, total_bytes)."""
-    target = download_any(url, save_path=workdir, progress_cb=progress_cb)
+    target = download_any(url, save_path=workdir, progress_cb=progress_cb, prescan=prescan)
     if not target or not os.path.isdir(target):
         return None, 0
     total = 0
@@ -736,7 +839,7 @@ def make_progress_cb(status, loop):
         pct = int(done * 100 / max(total, 1))
         bar = '█' * (pct // 10) + '░' * (10 - pct // 10)
         asyncio.run_coroutine_threadsafe(
-            _safe_edit(status, f"Downloading...\n[{bar}] {pct}% ({done}/{total})"),
+            _safe_edit(status, f"Downloading...\n{bar} {pct}% ({done}/{total})"),
             loop,
         )
 
@@ -757,14 +860,43 @@ async def url_listener(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_as_zip(update.message, url)
 
 
+def human_size(num):
+    """Bytes -> '145.4 MB' format. None/unknown hole '?' dey."""
+    if not num or num <= 0:
+        return "?"
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    i, f = 0, float(num)
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024
+        i += 1
+    txt = f"{f:.1f}".rstrip('0').rstrip('.')
+    return f"{txt} {units[i]}"
+
+
 async def send_as_zip(message, url: str):
     """Link dile direct zip pathay — kono button na."""
     loop = asyncio.get_running_loop()
-    status = await message.reply_text("Downloading...")
+    status = await message.reply_text(
+        "Scanning...\n░░░░░░░░░░ 0% (finding images)"
+    )
     workdir = tempfile.mkdtemp(prefix="tgdl_")
     try:
+        # 1. Scan only — download shuru korar age count + size dekhay
+        info = await asyncio.to_thread(scan_any, url)
+        if not info or not info.get('count'):
+            await status.edit_text("No images found. Link / Cloudflare check koro.")
+            return
+
+        n_files = info['count']
+        est = info.get('est_bytes')
+        est_txt = f"~{human_size(est)}" if est else "size unknown"
+        await status.edit_text(
+            f"{n_files} images, {est_txt}\nPreparing download..."
+        )
+
+        # 2. Download with progress bar
         target, total = await asyncio.to_thread(
-            blocking_download, url, workdir, make_progress_cb(status, loop)
+            blocking_download, url, workdir, make_progress_cb(status, loop), info
         )
 
         if not target:
