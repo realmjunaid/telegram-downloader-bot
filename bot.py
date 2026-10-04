@@ -1861,40 +1861,11 @@ def fb_photo_id(url):
     return m.group(1) if m else url.split('?')[0]
 
 
-def pick_largest_variants(sess, urls):
-    """Proti photo-ID group theke HEAD diye sobcheye boro variant ney.
-    FB page-e thumbnail + boro 2 tai thake — boro tai original-er kachakachi."""
-    groups, order = {}, []
-    for u in urls:
-        gid = fb_photo_id(u)
-        if gid not in groups:
-            groups[gid] = []
-            order.append(gid)
-        if u not in groups[gid]:
-            groups[gid].append(u)
-
-    winners = []
-
-    def head_size(u):
-        try:
-            r = sess.head(u, headers={'Referer': 'https://www.facebook.com/'},
-                          timeout=20, allow_redirects=True)
-            if r.status_code == 200:
-                return int(r.headers.get('Content-Length') or 0)
-        except Exception:
-            pass
-        return 0
-
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for gid in order:
-            cands = groups[gid]
-            if len(cands) == 1:
-                winners.append(cands[0])
-                continue
-            sizes = list(ex.map(head_size, cands))
-            best = max(range(len(cands)), key=lambda i: sizes[i])
-            winners.append(cands[best] if sizes[best] else cands[0])
-    return winners
+def fb_big_variant(url):
+    """ctp thumb param -> s2048 full (signature same thake, CDN boro dey)."""
+    if 'ctp=' in url:
+        return re.sub(r'ctp=[^&]*', 'ctp=s2048x2048', url)
+    return url
 
 
 def fb_candidate_images(page):
@@ -1997,14 +1968,23 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         if fetch(vu, 'video', i):
             return target_dir
 
-    # 2. photo set: proti photo-ID-r largest variant + hash dedupe
+    # 2. photo set: proti photo-ID-r s2048 variant (fail hole original) + hash dedupe
     import hashlib
     seen_hash = set()
-    cands = pick_largest_variants(sess, fb_candidate_images(page))
+    seen_id, pairs = set(), []
+    for u in fb_candidate_images(page):
+        gid = fb_photo_id(u)
+        if gid in seen_id:
+            continue
+        seen_id.add(gid)
+        big = fb_big_variant(u)
+        pairs.append((big, u) if big != u else (u, None))
     n = 0
-    for u in cands:
+    for big_u, orig_u in pairs:
         n += 1
-        out = fetch(u, 'img', n)
+        out = fetch(big_u, 'img', n)
+        if not out and orig_u:
+            out = fetch(orig_u, 'img', n)
         if not out:
             continue
         try:
