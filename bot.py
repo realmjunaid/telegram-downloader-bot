@@ -1973,61 +1973,83 @@ def fb_unescape_url(url):
 def fb_parse_photo_page(html):
     """Photo viewer page theke full image url + porer photo id.
     Returns (image_url, next_id). next_id video holeo chain chole, save hoy na."""
+    # script-er vitore JSON escaped thakte pare
+    flat = html.replace('\\/', '/').replace('\\"', '"')
     url = ""
-    um = re.search(r',"image":\{"uri":"([^"]+)"', html)
-    if not um:
-        um = re.search(r'"viewer_image"\s*:\s*\{[^}]*?"uri"\s*:\s*"([^"]+)"', html)
-    if um:
-        url = fb_unescape_url(um.group(1))
-    nm = re.search(r'"nextMediaAfterNodeId":\{"__typename":"Photo","id":"(\d+)"', html)
-    if not nm:
-        nm = re.search(
-            r'"nextMedia":\{"edges":\[\{"node":\{"__typename":"Photo","id":"(\d+)"',
-            html)
-    if not nm:
-        nm = re.search(
-            r'"nextMedia":\{"edges":\[\{"node":\{"__typename":"Video","id":"(\d+)"',
-            html)
-    return url, (nm.group(1) if nm else "")
+    for blob in (html, flat):
+        um = re.search(r',"image":\{"uri":"([^"]+)"', blob)
+        if not um:
+            um = re.search(r'"viewer_image"\s*:\s*\{[^}]*?"uri"\s*:\s*"([^"]+)"', blob)
+        if um:
+            url = fb_unescape_url(um.group(1))
+            break
+    nxt = ""
+    for blob in (html, flat):
+        nm = re.search(r'"nextMediaAfterNodeId":\{"__typename":"Photo","id":"(\d+)"', blob)
+        if not nm:
+            nm = re.search(
+                r'"nextMediaAfterNodeId":\{"__typename":"Video","id":"(\d+)"', blob)
+        if nm:
+            nxt = nm.group(1)
+            break
+    return url, nxt
 
 
-def fb_walk_pcb(set_id, seed_ids, stop_at=0):
-    """Post collage (pcb) er protita photo. HTML-e shudhu prothom ~5 ta embed thake,
-    baki gulo photo/?fbid= chain-e (nextMediaAfterNodeId). Returns [(key, url)] in order."""
+def fb_walk_pcb(set_id, seed_ids, sess=None):
+    """Post collage (pcb) er protita photo.
+    HTML-e Facebook prothom ~5 ta embed kore, count-o 5 bole dite pare.
+    Chain (nextMediaAfterNodeId) loop-e fire gele set sesh — declared count-e thambe na."""
     if not set_id or not str(set_id).startswith("pcb."):
         return []
     seeds = [s for s in seed_ids if s and str(s).isdigit()]
     if not seeds:
         return []
-    sess = new_scraper()
-    hdr = {'Accept': 'text/html', 'User-Agent': headers['User-Agent']}
-    # stop_at = post-er declared count. Chain loop-e fire gele tar agei thambe.
-    cap = stop_at if stop_at and stop_at > 0 else 40
-    cap = min(max(int(cap), 1), 100)
-    out, seen = [], set()
+    if sess is None:
+        sess = new_scraper()
+    hdr = {
+        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': headers['User-Agent'],
+        'Referer': 'https://www.facebook.com/',
+    }
+    cap = 100
+    out, seen, have = [], set(), set()
     photo_id = seeds[0]
-    while photo_id and photo_id not in seen and len(out) < cap:
+    misses = 0
+    while photo_id and len(out) < cap and misses < 6:
+        if photo_id in seen:
+            break
         seen.add(photo_id)
-        try:
-            r = sess.get(
-                f"https://www.facebook.com/photo/?fbid={photo_id}&set={set_id}",
-                headers=hdr, timeout=30)
-        except Exception as e:
-            print(f" FB photo {photo_id} fail: {str(e)[:80]}", flush=True)
-            break
-        if r.status_code != 200 or len(r.text) < 2000:
-            print(f" FB photo {photo_id} bad page {getattr(r, 'status_code', '?')}", flush=True)
-            break
-        url, nxt = fb_parse_photo_page(r.text)
-        # video item-er thumbnail photo hishebe save hobe na
-        is_this_photo = f'"__isNode":"Photo","id":"{photo_id}"' in r.text
-        if is_this_photo and url and 'scontent' in url:
-            m = re.search(r'(\d+_\d+_\d+_n)', url)
-            out.append((m.group(1) if m else photo_id, url))
+        html = ""
+        for purl in (
+            f"https://www.facebook.com/photo/?fbid={photo_id}&set={set_id}",
+            f"https://www.facebook.com/photo.php?fbid={photo_id}&set={set_id}",
+        ):
+            try:
+                r = sess.get(purl, headers=hdr, timeout=30)
+            except Exception as e:
+                print(f" FB photo {photo_id} fail: {str(e)[:80]}", flush=True)
+                continue
+            if r.status_code == 200 and len(r.text) > 2000 and "nextMedia" in r.text:
+                html = r.text
+                break
+        if not html:
+            misses += 1
+            print(f" FB photo {photo_id} page nai", flush=True)
+            photo_id = next((s for s in seeds if s not in seen), "")
+            continue
+        misses = 0
+        url, nxt = fb_parse_photo_page(html)
+        # emoji / sticker (t39.1997) photo na
+        if url and "scontent" in url and "/t39.1997" not in url:
+            m = re.search(r"(\d+_\d+_\d+_n)", url)
+            key = m.group(1) if m else photo_id
+            if key not in have:
+                have.add(key)
+                out.append((key, url))
         if not nxt or nxt in seen:
             break
         photo_id = nxt
-        time.sleep(0.3)
+        time.sleep(0.25)
     print(f" FB set walk {set_id}: {len(out)} photos", flush=True)
     return out
 
@@ -2054,7 +2076,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
     sess = get_scraper()
     # render session-sticky — proti attempt-e fresh session-e alada render aste pare
     union, declared, page, postid = {}, 0, "", ""
-    set_id, seed_ids = "", []
+    set_id, seed_ids, page_sess = "", [], None
     targets = [url]
     m0 = re.search(r'/(\d+)/posts/(\d+)', url)
     if m0:
@@ -2072,6 +2094,7 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
             continue
         if len(r.text) > len(page):
             page = r.text
+            page_sess = cur
         if not postid:
             pm = re.search(r'/posts/(\d+)', r.url)
             if pm:
@@ -2100,43 +2123,21 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
                     union[key] = (big_u, orig_u)
         except Exception:
             pass
-        # node-e na thaka baki photo: story_attachment-er kachakachi
-        # t39.99422-6 bucket (post-photo) theke nearest-first, declared porjonto
-        try:
-            marks = [mm.start() for mm in re.finditer('story_attachment', r.text)]
-            extra = []
-            for m in re.finditer(r'(https://scontent[^"\\\s]*?t39\.99422-6/(\d+_\d+_\d+_n)[^"\\\s]*)', r.text):
-                u, pid = m.group(1).replace('\\/', '/').replace('&amp;', '&'), m.group(2)
-                if marks:
-                    dist = min(abs(m.start() - x) for x in marks)
-                else:
-                    dist = 0
-                extra.append((dist, pid, u))
-            extra.sort(key=lambda e: e[0])
-            for dist, pid, u in extra:
-                if declared and len(union) >= declared:
-                    break
-                # dure-r CDN url onno post-er photo — ei post-e dhukabe na
-                if dist > 60000:
-                    break
-                if pid in union:
-                    continue
-                big = fb_big_variant(u)
-                union.setdefault(pid, (big, u) if big != u else (big, None))
-        except Exception:
-            pass
         print(f" FB nodes fetch {attempt + 1}: {len(union)}/{declared or '?'}", flush=True)
-        if declared and len(union) >= declared:
-            break
-        # baki photo static HTML-e thake na (FB ~5 ta embed kore). set walk-e pawa jabe.
-        if set_id and seed_ids and declared and len(union) < declared:
+        # baki photo HTML-e nai. count 5 holeo set aro boro hote pare — walk-e pawa jabe.
+        if set_id and seed_ids:
             break
         time.sleep(2)
-    # count 8 holeo nodes-e 5 ta. pcb chain diye baki photo ano.
-    if set_id.startswith("pcb.") and seed_ids and declared and len(union) < declared:
-        walked = fb_walk_pcb(set_id, seed_ids, declared)
+    if not set_id and postid:
+        set_id = f"pcb.{postid}"
+    # declared count-e trust kora jay na: FB prothom 5 ta embed kore count-o 5 dite pare.
+    # chain nijer loop-e thambe, tai post-er baki photo o ashe.
+    if set_id.startswith("pcb.") and seed_ids:
+        walked = fb_walk_pcb(set_id, seed_ids, page_sess)
         if len(walked) > len(union):
             union = {key: (url, None) for key, url in walked}
+            if len(union) > declared:
+                declared = len(union)
             print(f" FB set filled: {len(union)}/{declared}", flush=True)
     if not page:
         raise ValueError("PAGE_FAIL")
@@ -2191,10 +2192,11 @@ def blocking_facebook_download(url, workdir, byte_cb=None):
         except Exception:
             return None
 
-    # 1. video thakle video only (best first)
-    for i, vu in enumerate(fb_candidate_videos(page), start=1):
-        if fetch(vu, 'video', i):
-            return target_dir, 1
+    # video post (photo set nai) hole video. multi-photo post-e onno video dhukbe na.
+    if len(union) <= 1:
+        for i, vu in enumerate(fb_candidate_videos(page), start=1):
+            if fetch(vu, 'video', i):
+                return target_dir, 1
 
     # 2. photo set: EXACT nodes union (viewer full-size) -> fallback scoped
     import hashlib
