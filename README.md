@@ -1,13 +1,16 @@
-# DBot — Gallery to Telegram Zip Bot
+# DBot — Link to Telegram Bot
 
-Send a gallery/post link in Telegram → bot downloads everything → sends back
-as one 2GB zip in chat.
+Send a link in Telegram → bot downloads original files → sends back in chat.
 
 Supports:
-- `e-hentai.org / exhentai.org` galleries (`/g/...`)
-- `pawchive.pw` posts (`/.../user/.../post/...`)
+- Mega file/folder links
+- Terabox share links
+- Facebook posts (photo/video)
+- Instagram posts/reels
+- YouTube / TikTok videos
+- Any direct file link
 
-No single huge zip. 1000+ images = `part1.zip, part2.zip, ...` automatically.
+Big sets split into 2GB zips (`part1.zip, part2.zip, ...`) automatically.
 
 ---
 
@@ -15,15 +18,14 @@ No single huge zip. 1000+ images = `part1.zip, part2.zip, ...` automatically.
 
 ```
 You send link
-   → bot downloads to temp folder (eh_downloader.py)
-   → packs everything into one zip (max 2GB)
+   → bot downloads original files to temp folder
+   → packs into zip (max 2GB per part)
    → sends part1.zip, part2.zip...
    → deletes temp files
 ```
 
-- Files keep site order: `001 - name.webp`, `002 - name.jpg` ...
-- Resume-safe filenames, retry on network hiccup.
-- Fixed 2GB per zip. Gallery 2GB-er moddhe hole single zip, besi hole part1, part2...
+- Original bytes, no recompression (`ZIP_STORED`, hash-verified).
+- Fixed 2GB per zip. Set 2GB-er moddhe hole single zip, besi hole part1, part2...
 - **Auto-delete:** send sesh hole bot `workdir` (images + zips) `shutil.rmtree` diye
   permanently delete kore. Alada delete kora lage na, VPS full hobe na.
   `botapi` container-er cache `cleaner` service hourly (6h+ purono file) clean kore.
@@ -123,28 +125,22 @@ Look for:
 
 ```
 botapi  | ... authorised ...
-bot     | Bot running... (MAX_ZIP_MB=100)
+bot     | Bot running... (MAX_ZIP_MB=2000)
 ```
 
-Then open Telegram → your bot → send a gallery link.
+Then open Telegram → your bot → send a link.
 
 ---
 
 ## 6. Use the bot
 
-No command needed. Just paste a link directly:
+No command needed. Just paste a link directly (Mega / Terabox / Facebook /
+Instagram / YouTube / TikTok / direct file).
+
+Social (FB/IG) images/videos come as **direct documents** (no zip).
+Big sets arrive as zip with live progress:
 
 ```
-https://e-hentai.org/g/xxxx/yyyy/
-https://pawchive.pw/patreon/user/xxx/post/xxx
-```
-
-Bot direct zip pathabe (kono button na):
-
-```
-Scanning...
-░░░░░░░░░░ 0% (finding images)
-61 images, ~145 MB
 Downloading...
 ██████░░░░ 45% (28/61)
 Zipping...
@@ -154,7 +150,6 @@ gallery — part 1/1 (145 MB)
 Done! 61 files, 1 zip.
 ```
 
-Shuru-tei gallery scan kore file count + estimated size dekhay, tarpor download shuru hoy.
 2GB-er moddhe hole single zip, besi hole part1, part2...
 
 ## 6b. Mega file link
@@ -177,7 +172,7 @@ https://cdn.discordapp.com/.../pic.png
 https://example.com/book.pdf
 ```
 
-* Gallery/Mega/Terabox na — **jekono direct file link** namiye dibe
+* Mega/Terabox na — **jekono direct file link** namiye dibe
 * 1 ta file hole direct document, ek message-e onek link thakle zip
 * Webpage link hole refuse korbe (`Direct file paini`)
 * 2GB+ file skip, JS/Captcha wall host-e hobe na
@@ -207,7 +202,7 @@ https://instagram.com/reel/xxxx
 https://1024terabox.com/s/1AbC2dEf
 ```
 
-* Share-er sob file namiye **zip** kore pathabe (gallery flow — progress bar soho)
+* Share-er sob file namiye **zip** kore pathabe (progress bar soho)
 * Verification captcha asle clean message dibe (VPS IP-block hole pore try koro)
 * Expired/deleted link-e clean message
 * Experimental — real link diye test kore confirm koro
@@ -265,10 +260,10 @@ single zip, besi hole part1, part2... Change korte chaile `bot.py`-te
 
 | File | Purpose |
 |---|---|
-| `bot.py` | All-in-one: scraper + Telegram handlers, download→zip→send, size-based split |
-| `Dockerfile` | Bot container (`python:3.12-slim`) |
+| `bot.py` | All-in-one: scrapers + Telegram handlers, download→send, 2GB split |
+| `Dockerfile` | Bot container (`python:3.12-slim` + ffmpeg) |
 | `docker-compose.yml` | Bot + local Bot API (2GB max) |
-| `requirements.txt` | `cloudscraper, beautifulsoup4, python-telegram-bot, python-dotenv` |
+| `requirements.txt` | `cloudscraper, python-telegram-bot, python-dotenv, mega.py, yt-dlp` |
 
 ---
 

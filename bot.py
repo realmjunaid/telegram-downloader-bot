@@ -1,25 +1,14 @@
 import os
 import re
 import time
-import glob
 import random
 import threading
-from urllib.parse import urljoin, unquote
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import unquote
+from concurrent.futures import ThreadPoolExecutor
 import cloudscraper
 import requests
-from bs4 import BeautifulSoup
-
-# ---- Speed settings ----
-MAX_WORKERS = 5  # 3 = safe, 5 = fast, 8+ = ban risk
-PAGE_RETRIES = 4
-IMG_RETRIES = 4
-
-# resume-e sob media type check hobe (age mp4/webm chilo na)
-MEDIA_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "avif", "mp4", "webm", "m4v", "mov")
 
 _thread_local = threading.local()
-_print_lock = threading.Lock()
 
 try:
     # Windows console cp1252/codepage-e emoji print-e crash korto (UnicodeEncodeError)
@@ -30,14 +19,6 @@ try:
         _sys.stderr.reconfigure(errors='replace')
 except Exception:
     pass
-
-
-def _thread_log(msg):
-    with _print_lock:
-        try:
-            print(msg, flush=True)
-        except UnicodeEncodeError:
-            print(str(msg).encode('ascii', 'replace').decode('ascii'), flush=True)
 
 
 def new_scraper():
@@ -68,66 +49,6 @@ def get_scraper():
         _thread_local.scraper = new_scraper()
     return _thread_local.scraper
 
-# Custom HTTP Headers
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-
-# NOTE: Ei script pure HTTP (cloudscraper) diye download kore.
-# Ekhane kono browser window / screenshot / GUI automation nai.
-# Tai terminal minimize ba screen off er sathe scraping-er direct somporko nai.
-# Asol problem: screen off hole Windows WiFi/power-saving er karone
-# network-e choto hiccup hoy, ar ager code-e kono retry chilo na —
-# 1 bar fail korlei image miss hoye jeto. Tai mone hoto
-# "minimize korle fail, open korle kaj kore".
-# Fix: retry + resume + sleep-prevent, jate background-e cholleo fail na hoy.
-
-
-def prevent_sleep_start():
-    """Windows ke sleep-e jete badha dey download chola obosthay."""
-    try:
-        import ctypes
-        # ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001)
-        ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
-    except Exception:
-        pass
-
-
-def prevent_sleep_stop():
-    """Ager power state-e firiye dey."""
-    try:
-        import ctypes
-        # ES_CONTINUOUS only = normal behaviour restore
-        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-    except Exception:
-        pass
-
-
-def safe_get(url, timeout=30, retries=4, stream=False, extra_headers=None, quiet=False):
-    """Transient network error hole fast retry kore. Thread-safe."""
-    last_err = None
-    h = dict(headers)
-    if extra_headers:
-        h.update(extra_headers)
-    sess = get_scraper()
-    for attempt in range(1, retries + 1):
-        try:
-            res = sess.get(url, headers=h, timeout=timeout, stream=stream)
-            if res.status_code == 200:
-                return res
-            last_err = f"HTTP {res.status_code}"
-        except Exception as e:
-            last_err = str(e)[:120]
-        if not quiet:
-            _thread_log(f"   Retry {attempt}/{retries} ({last_err})")
-        # fast backoff: 1s, 2s, 3s... age chilo 2,4,8,16s (etai slow korto)
-        if attempt < retries:
-            time.sleep(attempt * 0.8 + random.uniform(0, 0.5))
-    if not quiet:
-        _thread_log(f"   Sob retry fail: {last_err}")
-    return None
 
 def sanitize_folder_name(name):
     """Removes invalid characters from folder names."""
@@ -146,570 +67,6 @@ def sanitize_file_name(name, max_len=120):
         else:
             name = name[:max_len]
     return name or "image"
-
-
-def extract_original_filename(soup, media_url, resp):
-    """Website-e dekha hubuhu original filename ber kore.
-    Priority: page text (NAME :: WxH) > URL tail > Content-Disposition.
-    """
-    # 1. /s/ page-er "#i2 div" e thake: "NAME.webp :: 1080 x 608 :: 5.27 MiB"
-    for div in soup.select('#i2 div, #i4 div'):
-        txt = div.get_text(strip=True)
-        if '::' in txt:
-            first = txt.split('::')[0].strip()
-            if '.' in first and len(first) < 200:
-                return first
-    # 2. hath media URL-er seshe asol filename thake: .../xres=org/NAME.webp
-    tail = unquote(media_url.rsplit('/', 1)[-1].split('?')[0].split(';')[0])
-    if '.' in tail and len(tail) < 200 and not tail.startswith('keystamp'):
-        m = re.search(r'([^;=]+\.(webp|gif|png|jpe?g|avif|mp4|webm|m4v|mov))$', tail, re.I)
-        if m:
-            return m.group(1)
-    # 3. Content-Disposition
-    cd = resp.headers.get('Content-Disposition', '') if resp is not None else ''
-    if cd:
-        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\s]+)"?', cd, re.I)
-        if m:
-            return unquote(m.group(1).strip().strip('"'))
-    return None
-
-
-def already_downloaded(target_dir, i):
-    """001.* ba '001 - *.ext' — jekono format-e thaklei resume (website sorting same thakbe)."""
-    prefix_num = f"{i:03d}"
-    # purono format: 001.jpg
-    for e in MEDIA_EXTS:
-        p = os.path.join(target_dir, f"{prefix_num}.{e}")
-        if os.path.exists(p) and os.path.getsize(p) > 10240:
-            return True
-    # notun format: 001 - original.webp (.tmp bad — crash leftover)
-    for p in glob.glob(os.path.join(target_dir, f"{prefix_num} - .*")):
-        if p.endswith(".tmp"):
-            continue
-        try:
-            if os.path.getsize(p) > 10240:
-                return True
-        except OSError:
-            pass
-    return False
-
-
-def extract_media_url(soup, page_url):
-    """Page theke asol media URL ber kore.
-
-    Priority:
-    1. fullimg.php (original file - animated webp/gif/mp4 ekhanei thake, animation preserve kore)
-    2. <video>/<source> tag (kokhono mp4/webm direct dey)
-    3. mp4/webm link
-    4. <img id="img"> (animated webp/gif hole etai animated file)
-    Age sudhu 1+4 check hoto, video tag ignore hoto bole
-    video-type poster sudhu static frame hoye namto.
-    """
-    # 1. Download original (RAW - animation/video preserve kore)
-    original_a = soup.find('a', href=re.compile(r'fullimg\.php'))
-    if original_a and original_a.get('href'):
-        return urljoin(page_url, original_a['href']), 'original'
-
-    # 2. video tag
-    video = soup.find('video')
-    if video is not None:
-        if video.get('src'):
-            return urljoin(page_url, video['src']), 'video'
-        source = video.find('source')
-        if source is not None and source.get('src'):
-            return urljoin(page_url, source['src']), 'video'
-
-    source = soup.find('source', src=True)
-    if source is not None:
-        return urljoin(page_url, source['src']), 'video'
-
-    # 3. direct video link
-    for a in soup.find_all('a', href=True):
-        if re.search(r'\.(mp4|webm|m4v|mov)(\?|;|$)', a['href'], re.I):
-            return urljoin(page_url, a['href']), 'video'
-
-    # 4. standard viewer image (animated webp/gif hole etai animated file)
-    img_tag = soup.find('img', id='img')
-    if img_tag is not None and img_tag.get('src'):
-        return urljoin(page_url, img_tag['src']), 'image'
-
-    # 5. fallback: #i3 box-er ভেতর যেকোনো media
-    box = soup.find('div', id='i3')
-    if box is not None:
-        v = box.find('video') or box.find('source')
-        if v is not None and v.get('src'):
-            return urljoin(page_url, v['src']), 'video'
-        im = box.find('img')
-        if im is not None and im.get('src'):
-            return urljoin(page_url, im['src']), 'image'
-
-    return None, None
-
-
-def decide_ext(media_url, resp):
-    """Content-Type + Content-Disposition + URL diye sothik extension."""
-    # 1. Content-Disposition: filename="....webp" / "...mp4"
-    cd = resp.headers.get('Content-Disposition', '')
-    if cd:
-        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\s]+)"?', cd, re.I)
-        if m:
-            fn = m.group(1).strip().strip('"')
-            if '.' in fn:
-                e = fn.rsplit('.', 1)[-1].lower().split('?')[0].split(';')[0]
-                if 2 <= len(e) <= 4 and e.isalnum():
-                    return {'jpeg': 'jpg'}.get(e, e)
-
-    # 2. Content-Type (sobcheye reliable - url-te ext na thakleo kaj kore)
-    ctype = resp.headers.get('Content-Type', '').lower().split(';')[0].strip()
-    ctype_map = {
-        'image/webp': 'webp',
-        'image/gif': 'gif',
-        'image/png': 'png',
-        'image/jpeg': 'jpg',
-        'image/jpg': 'jpg',
-        'image/avif': 'avif',
-        'video/mp4': 'mp4',
-        'video/webm': 'webm',
-        'video/quicktime': 'mov',
-        'video/x-m4v': 'm4v',
-        'application/octet-stream': None,  # niche URL theke ber koro
-    }
-    if ctype in ctype_map and ctype_map[ctype]:
-        return ctype_map[ctype]
-
-    # 3. URL-er seshe asol filename (hath URL-e .../xres=org/NAME.webp thake)
-    tail = media_url.rsplit('/', 1)[-1].lower()
-    m2 = re.search(r'\.(webp|gif|png|jpe?g|avif|mp4|webm|m4v|mov)(?:[?;]|$)', tail)
-    if m2:
-        e = m2.group(1)
-        return 'jpg' if e == 'jpeg' else e
-
-    # 4. fullimg.php?id=...&...&ext=webp type query
-    m3 = re.search(r'ext=(webp|gif|png|jpe?g|mp4|webm)', media_url.lower())
-    if m3:
-        e = m3.group(1)
-        return 'jpg' if e == 'jpeg' else e
-
-    return 'mp4' if 'video' in ctype else 'jpg'
-
-
-def is_html_page(resp, data: bytes) -> bool:
-    """Cloudflare block / error page (HTML) media bole vul kore save na hoy."""
-    try:
-        ctype = (resp.headers.get('Content-Type', '') if resp is not None else '').lower()
-    except Exception:
-        ctype = ''
-    if 'text/html' in ctype or 'text/plain' in ctype:
-        return True
-    head = data.lstrip()[:200].lower()
-    return head.startswith(b'<') and (b'<html' in head or b'<!doctype' in head)
-
-
-def fix_ext_by_magic(data: bytes, ext: str) -> str:
-    """Bytes untouched rekhe sudhu extension content-er sathe milay.
-    Ext vul hole kichu client file khulte pare na (tap-e kichu hoyna)."""
-    if data[:3] == b'\xff\xd8\xff':
-        real = 'jpg'
-    elif data[:8] == b'\x89PNG\r\n\x1a\n':
-        real = 'png'
-    elif data[:6] in (b'GIF87a', b'GIF89a'):
-        real = 'gif'
-    elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-        real = 'webp'
-    elif data[:4] == b'\x1a\x45\xdf\xa3':
-        real = 'webm'
-    elif len(data) > 12 and data[4:8] == b'ftyp':
-        real = 'mp4'
-    else:
-        return ext  # unknown (zip/rar/psd/...) — jemon ache temon
-    if real == ext or (real == 'jpg' and ext in ('jpg', 'jpeg')):
-        return ext
-    return real
-
-def parse_gallery_meta(soup):
-    """e-hentai gallery page theke file count + total size ('61 images (145.4 MB)') ber kore."""
-    text = soup.get_text(" ", strip=True)
-    count = size = None
-    m = re.search(r'(\d[\d,]*)\s*images?', text)
-    if m:
-        try:
-            count = int(m.group(1).replace(',', ''))
-        except ValueError:
-            count = None
-    m2 = re.search(r'\(?\s*([\d.]+)\s*(KB|MB|GB|TB)\s*\)?', text, re.I)
-    if m2:
-        try:
-            mult = {'kb': 1024, 'mb': 1024 ** 2, 'gb': 1024 ** 3, 'tb': 1024 ** 4}
-            size = int(float(m2.group(1)) * mult[m2.group(2).lower()])
-        except (ValueError, KeyError):
-            size = None
-    return count, size
-
-
-def scan_eh_gallery(gallery_url):
-    """Sudhu gallery page scan kore title, page_urls, count + estimated size.
-    Kono image download hoy na."""
-    title = "EH_Gallery"
-    page_urls = []
-    count = size = None
-    current_url = gallery_url
-
-    while current_url:
-        res = safe_get(current_url, timeout=30, retries=PAGE_RETRIES, quiet=True)
-        if res is None:
-            print(" Failed to access page after retry")
-            break
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        if title == "EH_Gallery":
-            title_tag = soup.find('h1', id='gn') or soup.find('h1', id='gj')
-            if title_tag and title_tag.text.strip():
-                title = sanitize_folder_name(title_tag.text)
-
-        if count is None or size is None:
-            c, s = parse_gallery_meta(soup)
-            count = count if count is not None else c
-            size = size if size is not None else s
-
-        for a in soup.find_all('a', href=re.compile(r'/s/[a-f0-9]+/\d+-\d+')):
-            if a['href'] not in page_urls:
-                page_urls.append(a['href'])
-
-        next_page = None
-        ptt_table = soup.find('table', class_='ptt')
-        if ptt_table:
-            all_tds = ptt_table.find_all('td')
-            if all_tds:
-                last_a = all_tds[-1].find('a')
-                if last_a and 'href' in last_a.attrs:
-                    next_url = last_a['href']
-                    if next_url != current_url:
-                        next_page = next_url
-
-        current_url = next_page
-        time.sleep(random.uniform(0.2, 0.5))
-
-    if count is None:
-        count = len(page_urls)
-    return {'title': title, 'page_urls': page_urls, 'count': count, 'est_bytes': size}
-
-
-def download_eh_gallery(gallery_url, save_path=".", progress_cb=None, prescan=None):
-    print(f" Scanning gallery: {gallery_url}")
-
-    if prescan and prescan.get('page_urls'):
-        title = prescan['title']
-        page_urls = prescan['page_urls']
-    else:
-        scan = scan_eh_gallery(gallery_url)
-        title = scan['title']
-        page_urls = scan['page_urls']
-
-    if not page_urls:
-        print(" No images found. The layout changed or Cloudflare blocked the request.")
-        return None
-
-    # 2. Create output directory
-    target_dir = os.path.join(save_path, title)
-    os.makedirs(target_dir, exist_ok=True)
-    total_images = len(page_urls)
-
-    print(f" Target Folder: {os.path.abspath(target_dir)}")
-    print(f" Found {total_images} images. Downloading RAW with {MAX_WORKERS} parallel workers...\n")
-
-    def download_one(i, page_url):
-        # Resume support (purono 001.ext + notun '001 - name.ext' duitai)
-        if already_downloaded(target_dir, i):
-            return f"[{i}/{total_images}]  Skipped (exists)."
-        try:
-            r = safe_get(page_url, timeout=30, retries=PAGE_RETRIES, quiet=True)
-            if r is None:
-                return f"[{i}/{total_images}]  Page fail: {page_url}"
-            s = BeautifulSoup(r.text, 'html.parser')
-
-            media_url, kind = extract_media_url(s, page_url)
-
-            if not media_url:
-                return f"[{i}/{total_images}]  Image/video link not found."
-
-            img_res = safe_get(
-                media_url, timeout=60, retries=IMG_RETRIES, quiet=True,
-                extra_headers={'Referer': page_url,
-                               'Accept': '*/*'},
-            )
-            if img_res is None:
-                return f"[{i}/{total_images}]  Media fail after retry."
-
-            img_data = img_res.content
-            if len(img_data) < 10240:
-                return f"[{i}/{total_images}]  Too small ({len(img_data)}b)."
-
-            # Cloudflare error page (HTML) image nam-e save hole Telegram-e
-            # blank/okl file jeto — tai HTML content reject.
-            if is_html_page(img_res, img_data):
-                return f"[{i}/{total_images}]  Skipped (HTML, not media)."
-
-            ext = fix_ext_by_magic(img_data, decide_ext(media_url, img_res))
-
-            # Original title + sorting: '001 - NAME.webp'
-            # number prefix thakay local folder-e website-er hubuhu order thake,
-            # ar pichone original title thakay ki file bujha jay.
-            orig = extract_original_filename(s, media_url, img_res)
-            if orig:
-                stem = orig.rpartition('.')[0] if '.' in orig else orig
-                stem = sanitize_file_name(stem)
-                filename = os.path.join(target_dir, f"{i:03d} - {stem}.{ext}")
-            else:
-                filename = os.path.join(target_dir, f"{i:03d}.{ext}")
-            tmpfile = filename + ".tmp"
-            with open(tmpfile, 'wb') as f:
-                f.write(img_data)
-            os.replace(tmpfile, filename)
-            label = 'video' if ext in ('mp4', 'webm', 'm4v', 'mov') else ('animated' if ext in ('webp', 'gif') else 'image')
-            return f"[{i}/{total_images}]  {label} {os.path.basename(filename)} ({len(img_data)//1024} KB)"
-        except Exception as e:
-            return f"[{i}/{total_images}]  {str(e)[:100]}"
-
-    prevent_sleep_start()
-    try:
-        done = 0
-        t0 = time.time()
-        # ThreadPool: 1 ta 1 ta kore na namiye 5 ta eksathe namabe -> ~4-5x fast
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futures = {ex.submit(download_one, i, u): i for i, u in enumerate(page_urls, start=1)}
-            for fut in as_completed(futures):
-                _thread_log(fut.result())
-                done += 1
-                if progress_cb is not None:
-                    try:
-                        progress_cb(done, total_images)
-                    except Exception:
-                        pass
-                if done % 10 == 0:
-                    speed = done / max(time.time() - t0, 1)
-                    _thread_log(f"--- Progress: {done}/{total_images} ({speed:.1f} img/s) ---")
-    finally:
-        prevent_sleep_stop()
-
-    print(f"\n RAW Download Complete! Saved in: {os.path.abspath(target_dir)}")
-    return os.path.abspath(target_dir)
-
-
-def parse_pawchive_url(url):
-    """https://pawchive.pw/{service}/user/{user}/post/{post} -> (service, user, post)"""
-    m = re.search(r'pawchive\.pw/([^/]+)/user/([^/]+)/post/([^/?#]+)', url)
-    if m:
-        return m.group(1), m.group(2), m.group(3)
-    return None, None, None
-
-
-def scan_pawchive_post(post_url):
-    """Pawchive API theke sudhu post info (title, file count, estimated size) — download chara."""
-    service, user, post_id = parse_pawchive_url(post_url)
-    if not post_id:
-        print(" Pawchive post URL bujha jayni.")
-        return None
-
-    api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
-    print(f" Pawchive API: {api_url}")
-    res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES, quiet=True,
-                   extra_headers={'Accept': 'application/json'})
-    if res is None:
-        print(" API theke post info pelam na.")
-        return None
-    try:
-        post = res.json()
-    except Exception:
-        print(" API response JSON na.")
-        return None
-
-    title = (post.get('title') or f"pawchive_{post_id}").strip()
-    author = post.get('author') or post.get('user') or user
-    if isinstance(author, dict):
-        author = author.get('name') or user
-    folder = sanitize_folder_name(
-        f"{author} - {title} [{service} {post_id}] (Patreon)" if service == 'patreon'
-        else f"{author} - {title} [{service} {post_id}]"
-    )
-
-    items, seen = [], set()
-    main = post.get('file') or {}
-    for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
-        name, path = (a.get('name') or '').strip(), a.get('path') or ''
-        if path and path not in seen and name:
-            seen.add(path)
-            items.append((name, path))
-
-    if not items:
-        print(" Ei post-e kono file/attachment nai.")
-        return None
-
-    # API-te size na thakle estimate unknown — None pathay, bot "unknown" dekhay
-    total = 0
-    has_size = False
-    for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
-        sz = a.get('size') or a.get('filesize') or a.get('bytes')
-        try:
-            if sz:
-                total += int(sz)
-                has_size = True
-        except (TypeError, ValueError):
-            pass
-
-    return {
-        'title': title,
-        'folder': folder,
-        'count': len(items),
-        'est_bytes': total if has_size else None,
-        'has_full': post.get('has_full'),
-        'items': items,
-        'service': service,
-        'user': user,
-        'post_id': post_id,
-    }
-
-
-def download_pawchive_post(post_url, save_path=".", progress_cb=None, prescan=None):
-    """Pawchive post-er sob attachment original filename soho download kore.
-
-    API: /api/v1/{service}/user/{user}/post/{post} theke
-    asol filename (1M.png, ...) + hash path pay.
-    has_full=True hole /data/ (original), na hole /thumbnail/data/ (preview)
-    theke namay — site-ei full file na thakle original deya somvob na.
-    prescan thakle API abar call hoy na (scan-er data reuse).
-    """
-    if prescan and prescan.get('items'):
-        service, user, post_id = prescan.get('service'), prescan.get('user'), prescan.get('post_id')
-        folder, items = prescan['folder'], prescan['items']
-        has_full = prescan.get('has_full')
-        target_dir = os.path.join(save_path, folder)
-        os.makedirs(target_dir, exist_ok=True)
-    else:
-        service, user, post_id = parse_pawchive_url(post_url)
-        if not post_id:
-            print(" Pawchive post URL bujha jayni. Example: https://pawchive.pw/patreon/user/72639416/post/139203021")
-            return None
-
-        api_url = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post_id}"
-        print(f" Pawchive API: {api_url}")
-        res = safe_get(api_url, timeout=30, retries=PAGE_RETRIES,
-                       extra_headers={'Accept': 'application/json'})
-        if res is None:
-            print(" API theke post info pelam na.")
-            return None
-        try:
-            post = res.json()
-        except Exception:
-            print(" API response JSON na.")
-            return None
-
-        title = (post.get('title') or f"pawchive_{post_id}").strip()
-        author = post.get('author') or post.get('user') or user
-        # author API-te object hote pare
-        if isinstance(author, dict):
-            author = author.get('name') or user
-        folder = sanitize_folder_name(f"{author} - {title} [{service} {post_id}] (Patreon)" if service == 'patreon' else f"{author} - {title} [{service} {post_id}]")
-        target_dir = os.path.join(save_path, folder)
-        os.makedirs(target_dir, exist_ok=True)
-
-        # file + attachments, path diye dedupe
-        items, seen = [], set()
-        main = post.get('file') or {}
-        for a in ([main] if main.get('path') else []) + (post.get('attachments') or []):
-            name, path = (a.get('name') or '').strip(), a.get('path') or ''
-            if path and path not in seen and name:
-                seen.add(path)
-                items.append((name, path))
-
-        if not items:
-            print(" Ei post-e kono file/attachment nai.")
-            return None
-
-        has_full = post.get('has_full')
-    base = 'https://img.pawchive.pw/data' if has_full else 'https://img.pawchive.pw/thumbnail/data'
-    if has_full:
-        print(f" Full-res archived ({len(items)} files).")
-    else:
-        print(" Ei post ekhono archive hoyni (has_full=false) — site-e original nai,")
-        print("   tai preview quality nambe. Pore import hole abar chalale full-res pabe.")
-
-    print(f" Target Folder: {os.path.abspath(target_dir)}")
-
-    def download_one(i, name, path):
-        safe_name = sanitize_file_name(name)
-        # preview mode-e archive file-er (rar/zip/psd) kono thumbnail thake na
-        if not has_full and safe_name.lower().endswith(('.rar', '.zip', '.7z', '.psd', '.psb', '.clip', '.sai', '.bin')):
-            return f"[{i}/{len(items)}]  Skipped (archive, full-res import hole pabe): {safe_name}"
-        out = os.path.join(target_dir, f"{i:03d} - {safe_name}")
-        if os.path.exists(out) and os.path.getsize(out) > 10240:
-            return f"[{i}/{len(items)}]  Skipped (exists)."
-        # purono numeric-only format thakleo skip
-        if already_downloaded(target_dir, i):
-            return f"[{i}/{len(items)}]  Skipped (exists)."
-        url = base + path if path.startswith('/') else base + '/' + path
-        r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
-                     extra_headers={'Referer': post_url, 'Accept': '*/*'})
-        if r is None and has_full:
-            # kokhono flag thakleo file missing thake — preview fallback
-            url = 'https://img.pawchive.pw/thumbnail/data' + path
-            r = safe_get(url, timeout=60, retries=IMG_RETRIES, quiet=True,
-                         extra_headers={'Referer': post_url, 'Accept': '*/*'})
-        if r is None:
-            return f"[{i}/{len(items)}]  Fail: {name}"
-        data = r.content
-        if len(data) < 10240:
-            return f"[{i}/{len(items)}]  Too small ({len(data)}b): {name}"
-        if is_html_page(r, data):
-            return f"[{i}/{len(items)}]  Skipped (HTML, not media): {name}"
-        # ext content-er sathe na mille client khulte pare na — bytes same, sudhu ext thik
-        if '.' in safe_name:
-            stem, dot, e = safe_name.rpartition('.')
-            fixed = fix_ext_by_magic(data, e.lower())
-            if fixed != e.lower():
-                safe_name = f"{stem}.{fixed}"
-                out = os.path.join(target_dir, f"{i:03d} - {safe_name}")
-        tmp = out + ".tmp"
-        with open(tmp, 'wb') as f:
-            f.write(data)
-        os.replace(tmp, out)
-        tag = ' (preview)' if (not has_full or '/thumbnail/' in url) else ''
-        return f"[{i}/{len(items)}]  {os.path.basename(out)}{tag} ({len(data)//1024} KB)"
-
-    prevent_sleep_start()
-    try:
-        done, t0 = 0, time.time()
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futs = {ex.submit(download_one, i, n, p): i for i, (n, p) in enumerate(items, start=1)}
-            for fut in as_completed(futs):
-                _thread_log(fut.result())
-                done += 1
-                if progress_cb is not None:
-                    try:
-                        progress_cb(done, len(items))
-                    except Exception:
-                        pass
-                if done % 10 == 0:
-                    _thread_log(f"--- Progress: {done}/{len(items)} ({done/max(time.time()-t0,1):.1f} file/s) ---")
-    finally:
-        prevent_sleep_stop()
-
-    print(f"\n Pawchive Download Complete! Saved in: {os.path.abspath(target_dir)}")
-    return os.path.abspath(target_dir)
-
-
-def scan_any(url):
-    """URL dekhe site chine sothik scanner-e pathay. Returns scan dict or None."""
-    if 'pawchive.pw' in url:
-        return scan_pawchive_post(url)
-    return scan_eh_gallery(url)
-
-
-def download_any(url, save_path=".", progress_cb=None, prescan=None):
-    """URL dekhe site chine sothik downloader-e pathay. Returns target_dir or None."""
-    if 'pawchive.pw' in url:
-        return download_pawchive_post(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
-    else:
-        return download_eh_gallery(url, save_path=save_path, progress_cb=progress_cb, prescan=prescan)
 
 
 TERA_DOMAINS = (
@@ -1028,23 +385,6 @@ def make_zip_parts(src_dir: str, out_dir: str, base_name: str, max_bytes: int, p
     return zips
 
 
-def blocking_download(url: str, workdir: str, progress_cb=None, prescan=None):
-    """Thread-e chalano blocking download. Returns (target_dir, total_bytes)."""
-    target = download_any(url, save_path=workdir, progress_cb=progress_cb, prescan=prescan)
-    if not target or not os.path.isdir(target):
-        return None, 0
-    total = 0
-    for root, _, filenames in os.walk(target):
-        for fn in filenames:
-            if fn.endswith(".tmp"):
-                continue
-            try:
-                total += os.path.getsize(os.path.join(root, fn))
-            except OSError:
-                pass
-    return target, total
-
-
 async def send_one_file(chat, path, caption: str):
     """Ekta file flood-safe way-te pathay. RetryAfter/TimedOut hole wait kore retry.
     Returns: 'doc' / 'photo' / 'other' / 'failed' — Telegram ki hisebe nilo."""
@@ -1130,10 +470,11 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Link pathao — ami download kore Telegram-e diye dibo.\n\n"
         "Supported:\n"
-        "- Gallery (e-hentai / pawchive) -> zip\n"
         "- Mega file/folder link\n"
         "- Terabox share link\n"
-        "- YouTube / FB / IG / TikTok video\n"
+        "- Facebook post (photo/video)\n"
+        "- Instagram post/reel\n"
+        "- YouTube / TikTok video\n"
         "- Jekono direct file link\n\n"
         "Commands: /status /ping /help"
     )
@@ -1165,10 +506,10 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Gallery link -> scan (count + size) -> download bar -> zip bar -> upload. Max single zip 2GB.\n\n"
         "Mega file -> direct. Mega folder -> zip.\n"
         "Terabox share -> files -> zip.\n"
-        "YouTube video -> quality button. Shorts/FB/IG/TikTok -> auto 1080p.\n"
+        "FB / IG photo -> direct document. FB video -> document.\n"
+        "YouTube video -> quality button. Shorts/TikTok -> auto 1080p.\n"
         "Onno link -> direct file (1 ta hole document, onekgula hole zip, max 20 link).\n\n"
         "Limits: 2GB max file/zip, 60 min max video, no live stream.\n"
         "Sob temp file send-er por auto-delete hoy."
@@ -1211,9 +552,6 @@ async def route_url(update: Update):
     if is_video_url(url):
         await send_video(update.message, url)
         return
-    if "e-hentai.org" in url or "exhentai.org" in url or "pawchive.pw" in url:
-        await send_as_zip(update.message, url)
-        return
     await send_direct(update.message, urls)
 
 
@@ -1230,50 +568,8 @@ def human_size(num):
     return f"{txt} {units[i]}"
 
 
-async def send_as_zip(message, url: str):
-    """Link dile direct zip pathay — kono button na."""
-    loop = asyncio.get_running_loop()
-    status = await message.reply_text(
-        "Scanning...\n░░░░░░░░░░ 0% (finding images)"
-    )
-    workdir = tempfile.mkdtemp(prefix="tgdl_")
-    try:
-        # 1. Scan only — download shuru korar age count + size dekhay
-        info = await asyncio.to_thread(scan_any, url)
-        if not info or not info.get('count'):
-            await status.edit_text("No images found. Link / Cloudflare check koro.")
-            return
-
-        n_files = info['count']
-        est = info.get('est_bytes')
-        est_txt = f"~{human_size(est)}" if est else "size unknown"
-        await status.edit_text(
-            f"{n_files} images, {est_txt}\nPreparing download..."
-        )
-
-        # 2. Download with progress bar
-        target, total = await asyncio.to_thread(
-            blocking_download, url, workdir, make_progress_cb(status, loop, "Downloading..."), info
-        )
-
-        if not target:
-            await status.edit_text("Download fail. Link / Cloudflare check koro.")
-            return
-
-        await zip_and_send(status, message.chat, target, total)
-    except Exception as e:
-        try:
-            await status.edit_text(f"Error: {str(e)[:300]}")
-        except Exception:
-            pass
-    finally:
-        # sob temp file (downloaded images + zips) permanently delete,
-        # nahole VPS storage full hoye jabe
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
 async def zip_and_send(status, chat, target_dir: str, total: int):
-    """Downloaded folder -> zip (+progress) -> upload. Gallery + Terabox 2 jon-e use kore."""
+    """Downloaded folder -> zip (+progress) -> upload."""
     loop = asyncio.get_running_loop()
     n_files = sum(1 for _ in Path(target_dir).rglob("*")
                   if _.is_file() and not _.name.endswith(".tmp"))
@@ -1571,7 +867,7 @@ TERA_ERRORS = {
 
 
 async def send_terabox(message, url: str):
-    """Terabox share link -> files namay -> zip -> send (gallery flow reuse)."""
+    """Terabox share link -> files namay -> zip -> send."""
     loop = asyncio.get_running_loop()
     status = await message.reply_text("Connecting to Terabox...")
     workdir = tempfile.mkdtemp(prefix="tgdl_")
@@ -2616,7 +1912,7 @@ async def send_direct(message, urls):
         await zip_and_send(status, message.chat, target, total)
     except ValueError as e:
         if str(e) == "NO_FILE":
-            await status.edit_text("Direct file paini. Webpage link hole gallery supported site-er link dao.")
+            await status.edit_text("Direct file paini. Webpage link support kore na.")
         else:
             await status.edit_text(f"Error: {str(e)[:200]}")
     except Exception as e:

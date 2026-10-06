@@ -1,5 +1,4 @@
 cloudscraper
-beautifulsoup4
 python-telegram-bot
 python-dotenv
 mega.py
