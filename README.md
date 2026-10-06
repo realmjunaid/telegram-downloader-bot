@@ -82,7 +82,7 @@ No domain needed. Bot uses polling (outgoing connection only).
 
 ## 5. Deploy on Dokploy (recommended)
 
-You already have the code at `https://github.com/realmjunaid/dbot`.
+You already have the code at `https://github.com/realmjunaid/telegram-downloader-bot`.
 
 ### Step 1 — Push code (already done if you see files on GitHub)
 
@@ -98,7 +98,7 @@ docker-compose.yml   <- local API, 2GB
 ### Step 2 — Create service in Dokploy
 
 1. Dokploy → your Project → **Create Service → Application**.
-2. **Provider:** GitHub → select repo `realmjunaid/dbot`, branch `main`.
+2. **Provider:** GitHub → select repo `realmjunaid/telegram-downloader-bot`, branch `main`.
 3. **Build Type:** `Docker Compose`.
 4. **Compose File:** `docker-compose.yml`.
 5. No port / domain needed. If Dokploy asks for a domain, leave it empty or ignore — bot needs no incoming web traffic.
@@ -220,7 +220,7 @@ https://1024terabox.com/s/1AbC2dEf
 
 ```bash
 # 1. clone
-git clone https://github.com/realmjunaid/dbot.git
+git clone https://github.com/realmjunaid/telegram-downloader-bot.git
 cd dbot
 
 # 2. env file
