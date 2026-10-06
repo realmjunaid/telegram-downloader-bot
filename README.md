@@ -1,111 +1,78 @@
-# DBot — Telegram Download Bot (Mega, Terabox, Facebook, Instagram, YouTube, TikTok)
+# DBot — Telegram Download Bot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](Dockerfile)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](docker-compose.yml)
 
-Send a link in Telegram → bot downloads original files → sends back in chat.
-Free, open-source Telegram file downloader and leech bot with self-hosted Bot API (2GB support).
+Send a link in Telegram → the bot downloads the **original files** and sends them
+back in chat. Free and open source, self-hosted with Docker and a local Telegram
+Bot API server (**2GB file support**).
 
-Supports:
-- Mega file/folder links (`mega.nz`)
-- Terabox share links
-- Facebook posts (photo/video, full albums)
-- Instagram posts/reels/carousels
-- YouTube videos (quality picker) / Shorts, TikTok
-- Any direct file link
+## Features
 
-Big sets split into 2GB zips (`part1.zip, part2.zip, ...`) automatically.
+| Source | What you get |
+|---|---|
+| Mega file links (`mega.nz/file/...`) | Sent directly as documents |
+| Mega folder links (`mega.nz/folder/...`) | Downloaded (decrypted + verified), packed into zip(s) |
+| Terabox share links | All files downloaded, packed into zip(s) |
+| Facebook posts | Photos/videos as original documents (full albums supported) |
+| Instagram posts, carousels & reels | Original-quality documents |
+| YouTube videos | Quality picker buttons (up to 1080p) |
+| YouTube Shorts, TikTok | Best quality automatically (up to 1080p) |
+| Any direct file link | Downloaded and sent (up to 20 links per message) |
 
-> Keywords: telegram downloader bot, mega to telegram, terabox downloader bot, facebook video downloader, instagram downloader bot, youtube downloader bot, tiktok downloader, telegram leech bot, open source, docker, dokploy.
+- **Original quality, always** — bytes are never recompressed or converted
+  (zips use `ZIP_STORED`, Mega downloads are MAC-verified).
+- **Live progress bars** for downloading, zipping and uploading.
+- **Smart splitting** — sets over 2GB are split into `part1.zip`, `part2.zip`, …
+- **Auto-cleanup** — temp files are deleted after every job; a `cleaner` service
+  also purges the Bot API cache hourly. Your VPS disk stays clean.
+- **Bot commands** — `/start`, `/status` (uptime, active jobs, free disk),
+  `/ping`, `/help`.
+- **Private mode** — optional `ALLOWED_IDS` restricts the bot to you.
 
----
+> Why a local Bot API server? Official `api.telegram.org` caps bot files at
+> **50MB**. This repo runs Telegram's open-source Bot API next to the bot, so
+> files up to **2GB** work — same as human accounts.
 
-## 1. How it works
+## Requirements
 
-```
-You send link
-   → bot downloads original files to temp folder
-   → packs into zip (max 2GB per part)
-   → sends part1.zip, part2.zip...
-   → deletes temp files
-```
-
-- Original bytes, no recompression (`ZIP_STORED`, hash-verified).
-- Fixed 2GB per zip. Set 2GB-er moddhe hole single zip, besi hole part1, part2...
-- **Auto-delete:** send sesh hole bot `workdir` (images + zips) `shutil.rmtree` diye
-  permanently delete kore. Alada delete kora lage na, VPS full hobe na.
-  `botapi` container-er cache `cleaner` service hourly (6h+ purono file) clean kore.
-
-> Normal Telegram bots are limited to **50MB per file** via `api.telegram.org`.
-> This repo runs a **local Bot API server** next to the bot, so **2GB**
-> files work. Human accounts have 2GB, bots need this local server for the same.
-
----
-
-## 2. What you need
-
-| Thing | Where to get | Used for |
+| Thing | Where to get it | Used for |
 |---|---|---|
-| `BOT_TOKEN` | Telegram → [@BotFather](https://t.me/BotFather) → `/newbot` | Bot login |
-| `TELEGRAM_API_ID` | https://my.telegram.org → API Development Tools | Local API server login |
-| `TELEGRAM_API_HASH` | Same page as above | Local API server login |
+| `BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` | Bot login |
+| `TELEGRAM_API_ID` | [my.telegram.org](https://my.telegram.org) → API Development Tools | Local API server |
+| `TELEGRAM_API_HASH` | Same page as above | Local API server |
 | VPS + Dokploy | Your server | 24/7 hosting |
 
-No domain needed. Bot uses polling (outgoing connection only).
+No domain is needed — the bot uses polling (outgoing connections only).
 
----
+## Setup
 
-## 3. Get API_ID / API_HASH (5 min, one time)
+### 1. Get `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (5 min, one time)
 
-1. Go to https://my.telegram.org and log in with your phone number.
-2. Click **API Development Tools**.
-3. Fill the form:
-   - **App title:** `DBot` (anything)
-   - **Short name:** `dbotapp` (5–32 chars, letters+numbers only — `DBot` alone is too short)
+1. Log in at [my.telegram.org](https://my.telegram.org) with your phone number.
+2. Open **API Development Tools** → **Create application**.
+3. Fill in:
+   - **App title:** anything (e.g. `DBot`)
+   - **Short name:** 5–32 alphanumeric chars (e.g. `dbotapp`)
    - **URL:** leave empty
    - **Platform:** `Other (specify in description)`
    - **Description:** `Self-hosted bot api server`
-4. Click **Create application**.
-5. Copy `api_id` (numbers) and `api_hash` (letters+numbers). Keep them secret.
+4. Copy `api_id` and `api_hash` and keep them secret.
 
----
+### 2. Get `BOT_TOKEN` (2 min)
 
-## 4. Get BOT_TOKEN (2 min)
+1. Open [@BotFather](https://t.me/BotFather), send `/newbot` and follow the steps.
+2. Copy the token (`123456:ABC-...`) and keep it secret.
+3. Open a chat with your new bot once.
 
-1. Open [@BotFather](https://t.me/BotFather) in Telegram.
-2. Send `/newbot`, follow the questions (name + username).
-3. Copy the token that looks like `123456:ABC-...`. Keep it secret.
-4. Optional: send `/setprivacy` → disable? Not needed. Just start chatting with your new bot once (`/start`).
+### 3. Deploy on Dokploy (recommended)
 
----
-
-## 5. Deploy on Dokploy (recommended)
-
-You already have the code at `https://github.com/realmjunaid/telegram-downloader-bot`.
-
-### Step 1 — Push code (already done if you see files on GitHub)
-
-Required files in repo root:
-
-```
-bot.py
-requirements.txt
-Dockerfile
-docker-compose.yml   <- local API, 2GB
-```
-
-### Step 2 — Create service in Dokploy
-
-1. Dokploy → your Project → **Create Service → Application**.
-2. **Provider:** GitHub → select repo `realmjunaid/telegram-downloader-bot`, branch `main`.
-3. **Build Type:** `Docker Compose`.
-4. **Compose File:** `docker-compose.yml`.
-5. No port / domain needed. If Dokploy asks for a domain, leave it empty or ignore — bot needs no incoming web traffic.
-
-### Step 3 — Add environment variables
-
-Dokploy → Service → **Environment** tab → add these 3:
+1. **Create Service → Application**, provider **GitHub**,
+   repo `realmjunaid/telegram-downloader-bot`, branch `main`.
+2. **Build Type:** `Docker Compose`, **Compose file:** `docker-compose.yml`.
+3. Skip domain/port — a polling bot needs no inbound traffic.
+4. **Environment** tab — add these 3 variables:
 
 ```env
 BOT_TOKEN=123456:ABC-your-bot-token
@@ -113,169 +80,90 @@ TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=abcdef1234567890abcdef1234567890
 ```
 
-Optional:
+Optional variables:
 
 ```env
-ALLOWED_IDS=
+ALLOWED_IDS=123456789        # only this Telegram user ID may use the bot (empty = everyone)
+MEGA_EMAIL=you@example.com   # higher Mega quota (optional)
+MEGA_PASSWORD=your-password  # higher Mega quota (optional)
 ```
 
-> Leave `ALLOWED_IDS` empty = anyone can use the bot.
-> Set it to your Telegram numeric ID (e.g. `ALLOWED_IDS=123456789`) = only you.
+> Get your numeric ID from [@userinfobot](https://t.me/userinfobot).
 
-Click **Deploy**.
-
-### Step 4 — Check logs
-
-First start takes 1–2 minutes (`botapi` logs into Telegram).
-
-Look for:
+5. **Deploy.** First start takes 1–2 minutes while `botapi` logs in. Check **Logs** for:
 
 ```
 botapi  | ... authorised ...
 bot     | Bot running... (MAX_ZIP_MB=2000)
 ```
 
-Then open Telegram → your bot → send a link.
+Then send your bot a link.
 
----
+> After deploying, force a rebuild when updating (a 2-second build means Docker
+> reused the old image — delete the `bot` container/image and redeploy).
 
-## 6. Use the bot
+## Usage
 
-No command needed. Just paste a link directly (Mega / Terabox / Facebook /
-Instagram / YouTube / TikTok / direct file).
+Just paste a link — no command needed.
 
-Social (FB/IG) images/videos come as **direct documents** (no zip).
-Big sets arrive as zip with live progress:
+- **Mega file** → sent directly. **Mega folder** → downloaded and zipped.
+- **Terabox share** → all files downloaded and zipped.
+- **Facebook / Instagram photos** → original documents (no zip).
+- **YouTube video** → quality buttons (`1080p`, `720p`, …). Shorts, TikTok and
+  reels download at best quality automatically.
+- **Direct links** → one file arrives as a document; several links in one
+  message arrive zipped (max 20 links).
 
-```
-Downloading...
-██████░░░░ 45% (28/61)
-Zipping...
-██████░░░░ 60% (37/61)
-Uploading 1 zip file...
-gallery — part 1/1 (145 MB)
-Done! 61 files, 1 zip.
-```
+Limits: 2GB max per file/zip, 60-minute max video length, no live streams,
+no login-walled content unless you provide `cookies.txt` (export from your
+browser in Netscape format, place next to `docker-compose.yml` — it is
+git-ignored, never commit it).
 
-2GB-er moddhe hole single zip, besi hole part1, part2...
-
-## 6b. Mega file link
-
-```
-https://mega.nz/file/AbC123#keyXYZ
-```
-
-* `.zip/.rar/.7z` hole **direct** pathabe (re-zip na)
-* Single image/video/doc hole **direct document** hisebe jabe
-* 2GB besi hole refuse korbe
-* Free IP quota sesh hole `Mega free quota sesh` dekhabe — pore try koro ba `MEGA_EMAIL`/`MEGA_PASSWORD` env dao (quota bare)
-* Folder link (`/folder/...`) supported — sob file namiye **zip** kore pathabe (live test pass, 17 file verified)
-
-## 6d. Direct file link (universal)
-
-```
-https://files.catbox.moe/abc123.mp4
-https://cdn.discordapp.com/.../pic.png
-https://example.com/book.pdf
-```
-
-* Mega/Terabox na — **jekono direct file link** namiye dibe
-* 1 ta file hole direct document, ek message-e onek link thakle zip
-* Webpage link hole refuse korbe (`Direct file paini`)
-* 2GB+ file skip, JS/Captcha wall host-e hobe na
-
-## 6e. Video link (YouTube / Facebook / Instagram / TikTok)
-
-```
-https://youtu.be/xxxx
-https://vt.tiktok.com/xxxx
-https://fb.watch/xxxx
-https://instagram.com/reel/xxxx
-```
-
-* yt-dlp diye **mp4 (max 1080p)** namiye document hisebe pathabe
-* **YouTube video** hole quality button asbe (1080p/720p/480p...) — choose korle oi quality-te download
-* **Shorts + FB/IG/TikTok** auto-highest (button nai)
-* **FB/IG photo post + carousel** — image gulo original-e **direct document** (zip na)
-* 1.9GB+ file refuse, 60 min+ video refuse, live stream refuse
-* **FB photo post** — m.story album theke SUDHU oi post-er photo (onno post/sticker asbe na), s2048 full-size, sob direct document
-* 8+ photo-r post-e static HTML-e na thakle baki gulo miss hote pare — tokhon repo root-e `cookies.txt` (browser export, Netscape format) rekhe redeploy dao, login session-e full render Ashe. `cookies.txt` git-e jabe na (.gitignore)
-* **IG photo/carousel** — custom scraper (yt-dlp photo-te fail): s1080 originals, sob direct document. Video/reel hole yt-dlp fallback
-* Login wall (private/FB/IG) asle `cookies.txt` repo root-e rekhe redeploy dao (browser theke export)
-
-## 6c. Terabox share link
-
-```
-https://1024terabox.com/s/1AbC2dEf
-```
-
-* Share-er sob file namiye **zip** kore pathabe (progress bar soho)
-* Verification captcha asle clean message dibe (VPS IP-block hole pore try koro)
-* Expired/deleted link-e clean message
-* Experimental — real link diye test kore confirm koro
-
----
-
-## 7. Run locally (test on PC)
+## Run locally
 
 ```bash
-# 1. clone
 git clone https://github.com/realmjunaid/telegram-downloader-bot.git
-cd dbot
-
-# 2. env file
-copy .env.example .env
-# edit .env -> BOT_TOKEN only (zip fixed 2GB)
-
-# 3. install + run (simple mode, no local API)
+cd telegram-downloader-bot
+cp .env.example .env   # then edit .env
 pip install -r requirements.txt
 python bot.py
 ```
 
-For full 2GB local mode on PC you need Docker:
+For full 2GB support locally:
 
 ```bash
 docker compose up --build
 ```
 
----
-
-## 8. Zip size
-
-Fixed **2000MB (2GB) per zip** (`bot.py`-te hardcode). 2GB-er moddhe hole
-single zip, besi hole part1, part2... Change korte chaile `bot.py`-te
-`MAX_ZIP_MB = 2000` line edit kore redeploy dao.
-
----
-
-## 9. Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `BOT_TOKEN .env-e bosao` | Env var missing in Dokploy. Add `BOT_TOKEN`. |
-| Bot replies `❌ Download fail` | Link wrong, post deleted, or Cloudflare block. Try link in browser first. |
-| `botapi` keeps restarting | Wrong `TELEGRAM_API_ID/HASH`. Recopy from my.telegram.org. |
-| `❌ Error: Timed out` on 90MB+ zip (kintu file eshe jay) | Old build-er choto upload timeout. New version-e max (write 2h) — redeploy dao. |
-| Zip not received, `413 Request Entity Too Large` | You are on official API, not local. Check `TELEGRAM_API_BASE_URL=http://botapi:8081/bot` is set and `botapi` is running. |
-| `Short name` error on my.telegram.org | Must be 5–32 alphanumeric. Use `dbotapp`, not `DBot`. |
-| Dokploy asks for domain/port | Skip it. Polling bot needs no inbound port. `expose: 8081` is internal only (bot → botapi). |
-| Only I want to use the bot | Set `ALLOWED_IDS` to your Telegram ID. Get it from [@userinfobot](https://t.me/userinfobot). |
-
----
-
-## 10. Files
+## Project structure
 
 | File | Purpose |
 |---|---|
-| `bot.py` | All-in-one: scrapers + Telegram handlers, download→send, 2GB split |
-| `Dockerfile` | Bot container (`python:3.12-slim` + ffmpeg) |
-| `docker-compose.yml` | Bot + local Bot API (2GB max) |
-| `requirements.txt` | `cloudscraper, python-telegram-bot, python-dotenv, mega.py, yt-dlp` |
+| `bot.py` | Everything: scrapers, downloaders, Telegram handlers |
+| `Dockerfile` | Bot container (`python:3.12-slim` + ffmpeg for video merging) |
+| `docker-compose.yml` | `bot` + local Bot API (`botapi`) + cache `cleaner` |
+| `requirements.txt` | `cloudscraper`, `python-telegram-bot`, `python-dotenv`, `mega.py`, `yt-dlp` |
 
----
+The zip size cap lives in `bot.py` as `MAX_ZIP_MB = 2000` (Telegram's local-API
+limit — do not raise it).
 
-## 11. Security notes
+## Troubleshooting
 
-- Never commit `.env` or tokens. `.gitignore` already excludes `.env`.
-- Rotate `@BotFather` token if it ever leaks (`/revoke`).
-- `TELEGRAM_API_ID/HASH` belong to your Telegram account — don't share screenshots of them.
+| Problem | Fix |
+|---|---|
+| `BOT_TOKEN ...` on start | `BOT_TOKEN` env var is missing — add it and redeploy. |
+| `botapi` keeps restarting | Wrong `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` — recopy from my.telegram.org. |
+| `413 Request Entity Too Large` | Not using the local API server — check `botapi` is running. |
+| Download fails on login-walled posts | Add `cookies.txt` (browser export) and redeploy. |
+| Mega says quota exceeded | Free IP quota is spent — wait, retry later, or set `MEGA_EMAIL` / `MEGA_PASSWORD`. |
+| Only you should use the bot | Set `ALLOWED_IDS` to your Telegram user ID. |
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep downloads personal and legal —
+only fetch content you own or are allowed to archive, and respect each site's
+terms of service.
+
+## License
+
+[MIT](LICENSE) © 2026 realmjunaid
