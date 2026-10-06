@@ -1170,11 +1170,6 @@ async def on_quality_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ACTIVE_JOBS -= 1
 
 
-def is_video_url(url):
-    low = url.lower()
-    return any(d in low for d in VIDEO_DOMAINS)
-
-
 def is_fb_url(url):
     low = url.lower()
     return any(d in low for d in FB_DOMAINS)
