@@ -266,8 +266,6 @@ def blocking_terabox_download(url, workdir, byte_cb=None):
 
 # ================= BOT =================
 import asyncio
-import os
-import re
 import shutil
 import tempfile
 import uuid
@@ -1299,7 +1297,7 @@ def fb_walk_pcb(set_id, seed_ids, sess=None):
         sess = new_scraper()
     hdr = {
         'Accept': 'text/html,application/xhtml+xml',
-        'User-Agent': headers['User-Agent'],
+        'User-Agent': TERA_UA,
         'Referer': 'https://www.facebook.com/',
     }
     cap = 100
@@ -1583,11 +1581,6 @@ async def send_facebook(message, url: str):
             pass
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-
-
-def is_video_url(url):
-    low = url.lower()
-    return any(d in low for d in VIDEO_DOMAINS)
 
 
 def is_instagram_url(url):

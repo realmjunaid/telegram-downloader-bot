@@ -1,16 +1,23 @@
-# DBot — Link to Telegram Bot
+# DBot — Telegram Download Bot (Mega, Terabox, Facebook, Instagram, YouTube, TikTok)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](Dockerfile)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](docker-compose.yml)
 
 Send a link in Telegram → bot downloads original files → sends back in chat.
+Free, open-source Telegram file downloader and leech bot with self-hosted Bot API (2GB support).
 
 Supports:
-- Mega file/folder links
+- Mega file/folder links (`mega.nz`)
 - Terabox share links
-- Facebook posts (photo/video)
-- Instagram posts/reels
-- YouTube / TikTok videos
+- Facebook posts (photo/video, full albums)
+- Instagram posts/reels/carousels
+- YouTube videos (quality picker) / Shorts, TikTok
 - Any direct file link
 
 Big sets split into 2GB zips (`part1.zip, part2.zip, ...`) automatically.
+
+> Keywords: telegram downloader bot, mega to telegram, terabox downloader bot, facebook video downloader, instagram downloader bot, youtube downloader bot, tiktok downloader, telegram leech bot, open source, docker, dokploy.
 
 ---
 
